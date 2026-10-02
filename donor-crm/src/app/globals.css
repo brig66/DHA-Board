@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap");
+
+:root {
+  --bg: #f7f5f0;
+  --surface: #ffffff;
+  --border: #e0dccd;
+}
+
+body {
+  background: var(--bg);
+  color: #22201b;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+
+.btn-primary {
+  background: #1f6f66;
+  color: white;
+}
+.btn-primary:hover {
+  background: #195c54;
+}
+
+.btn-secondary {
+  background: white;
+  color: #22201b;
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover {
+  background: #f0ede4;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.92rem;
+  background: white;
+}
+.input:focus {
+  outline: 2px solid #1f6f66;
+  outline-offset: 1px;
+}
+
+.label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #5c584d;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+.pill-good { background: #e4efec; color: #1f6f66; }
+.pill-warn { background: #f3ead4; color: #b8862e; }
+.pill-bad { background: #f6e6de; color: #c4623f; }
+
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-danger { background: white; color: #c4623f; border: 1px solid #e8c9bb; }
+.btn-danger:hover { background: #f6e6de; }
+.btn-sm { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
+
+.table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.table th {
+  text-align: left; font-size: 0.74rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; color: #5c584d; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border);
+  white-space: nowrap; background: #faf8f3; position: sticky; top: 0;
+}
+.table td { padding: 0.55rem 0.75rem; border-bottom: 1px solid #efece3; vertical-align: top; }
+.table tbody tr:hover { background: #faf8f3; }
+.muted { color: #5c584d; }
