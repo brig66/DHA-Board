@@ -7,12 +7,13 @@ import { createClient } from "@/lib/supabase/client";
 import { setEmailRecipients } from "@/lib/data";
 import { cityLine, fullName, money, shortDate } from "@/lib/format";
 import ContactForm, { type ContactDraft } from "@/components/ContactForm";
-import type { ContactSummary, Donation, EmailLog } from "@/lib/types";
+import { GIFT_TYPES, type ContactSummary, type Donation, type EmailLog, type EventAttendance, type GiftType } from "@/lib/types";
 
 type GiftDraft = {
   gift_date: string;
   amount: string;
   event_name: string;
+  gift_type: GiftType;
   payment_method: string;
   notes: string;
 };
@@ -21,6 +22,7 @@ const blankGift = (): GiftDraft => ({
   gift_date: new Date().toISOString().slice(0, 10),
   amount: "",
   event_name: "",
+  gift_type: "Donation",
   payment_method: "",
   notes: "",
 });
@@ -32,6 +34,8 @@ export default function DonorPage() {
   const [gifts, setGifts] = useState<Donation[]>([]);
   const [emails, setEmails] = useState<EmailLog[]>([]);
   const [events, setEvents] = useState<string[]>([]);
+  const [attended, setAttended] = useState<EventAttendance[]>([]);
+  const [newEvent, setNewEvent] = useState("");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,17 +45,24 @@ export default function DonorPage() {
 
   const load = useCallback(async () => {
     const supabase = createClient();
-    const [c, g, e, ev] = await Promise.all([
+    const [c, g, e, ev, at, atAll] = await Promise.all([
       supabase.from("contact_summary").select("*").eq("id", id).maybeSingle(),
       supabase.from("donations").select("*").eq("contact_id", id).order("gift_date", { ascending: false }),
       supabase.from("email_log").select("*").eq("contact_id", id).order("sent_at", { ascending: false }),
-      supabase.from("donations").select("event_name").limit(5000),
+      supabase.from("donations").select("event_name").limit(10000),
+      supabase.from("event_attendance").select("*").eq("contact_id", id).order("event_name"),
+      supabase.from("event_attendance").select("event_name").limit(10000),
     ]);
     if (c.error) setError(c.error.message);
     setContact(c.data as ContactSummary | null);
     setGifts((g.data ?? []) as Donation[]);
     setEmails((e.data ?? []) as EmailLog[]);
-    setEvents(Array.from(new Set((ev.data ?? []).map((x: { event_name: string }) => x.event_name))).sort());
+    setAttended((at.data ?? []) as EventAttendance[]);
+    setEvents(
+      Array.from(
+        new Set([...(ev.data ?? []), ...(atAll.data ?? [])].map((x: { event_name: string }) => x.event_name))
+      ).sort()
+    );
   }, [id]);
 
   useEffect(() => {
@@ -89,6 +100,7 @@ export default function DonorPage() {
       gift_date: giftForm.gift_date,
       amount,
       event_name: giftForm.event_name.trim() || "General donation",
+      gift_type: giftForm.gift_type,
       payment_method: giftForm.payment_method.trim() || null,
       notes: giftForm.notes.trim() || null,
     };
@@ -115,9 +127,30 @@ export default function DonorPage() {
       gift_date: g.gift_date,
       amount: String(g.amount),
       event_name: g.event_name,
+      gift_type: g.gift_type ?? "Donation",
       payment_method: g.payment_method ?? "",
       notes: g.notes ?? "",
     });
+  }
+
+  async function addAttendance(e: React.FormEvent) {
+    e.preventDefault();
+    const name = newEvent.trim();
+    if (!name) return;
+    setError(null);
+    const { error } = await createClient()
+      .from("event_attendance")
+      .upsert({ contact_id: id, event_name: name, source: "Entered by staff" }, { onConflict: "contact_id,event_name", ignoreDuplicates: true });
+    if (error) return setError(error.message);
+    setNewEvent("");
+    load();
+  }
+
+  async function removeAttendance(a: EventAttendance) {
+    if (!confirm(`Remove "${a.event_name}" from this donor's events?`)) return;
+    const { error } = await createClient().from("event_attendance").delete().eq("id", a.id);
+    if (error) return setError(error.message);
+    load();
   }
 
   function emailThisDonor() {
@@ -134,6 +167,10 @@ export default function DonorPage() {
         <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="font-display text-2xl font-semibold">{fullName(contact)}</h1>
+            {contact.organization && contact.organization !== fullName(contact) && (
+              <p className="text-sm font-semibold">{contact.organization}</p>
+            )}
+            {contact.is_board_member && <span className="pill pill-good mt-1">Board member</span>}
             <p className="muted text-sm">
               {money(contact.total_given)} given across {contact.gift_count} gift{contact.gift_count === 1 ? "" : "s"}
               {contact.first_gift_date && <> &middot; donor since {contact.first_gift_date.slice(0, 4)}</>}
@@ -208,13 +245,25 @@ export default function DonorPage() {
 
         {giftForm && (
           <form onSubmit={saveGift} className="grid gap-3 border-t border-[var(--border)] bg-[#faf8f3] p-4 md:grid-cols-6">
+            <div className="md:col-span-6">
+              <label className="label">Type of gift</label>
+              <div className="mt-1 flex flex-wrap gap-4 text-sm">
+                {GIFT_TYPES.map((t) => (
+                  <label key={t} className="flex items-center gap-1.5">
+                    <input type="radio" name="gift_type" checked={giftForm.gift_type === t}
+                      onChange={() => setGiftForm({ ...giftForm, gift_type: t })} />
+                    {t}
+                  </label>
+                ))}
+              </div>
+            </div>
             <div>
               <label className="label">Date</label>
               <input type="date" required className="input mt-1" value={giftForm.gift_date}
                 onChange={(e) => setGiftForm({ ...giftForm, gift_date: e.target.value })} />
             </div>
             <div>
-              <label className="label">Amount ($)</label>
+              <label className="label">{giftForm.gift_type === "In-kind" ? "Value ($)" : "Amount ($)"}</label>
               <input required inputMode="decimal" className="input mt-1" value={giftForm.amount}
                 onChange={(e) => setGiftForm({ ...giftForm, amount: e.target.value })} />
             </div>
@@ -222,9 +271,6 @@ export default function DonorPage() {
               <label className="label">Event or campaign</label>
               <input list="event-list" className="input mt-1" placeholder="e.g. NTX Giving Day 2026" value={giftForm.event_name}
                 onChange={(e) => setGiftForm({ ...giftForm, event_name: e.target.value })} />
-              <datalist id="event-list">
-                {events.map((e) => <option key={e} value={e} />)}
-              </datalist>
             </div>
             <div className="md:col-span-2">
               <label className="label">Payment method</label>
@@ -269,7 +315,12 @@ export default function DonorPage() {
                       <div className="muted text-xs">net {money(g.net_amount)}</div>
                     )}
                   </td>
-                  <td>{g.event_name}</td>
+                  <td>
+                    {g.event_name}
+                    {g.gift_type && g.gift_type !== "Donation" && (
+                      <div><span className="pill pill-warn mt-1">{g.gift_type}</span></div>
+                    )}
+                  </td>
                   <td className="text-xs">
                     {[g.payment_method, g.fundraiser_page && `Fundraiser: ${g.fundraiser_page}`, g.recognition_name && `Recognition: ${g.recognition_name}`, g.dedication, g.notes, g.tracking_no && `Tracking #${g.tracking_no}`]
                       .filter(Boolean)
@@ -286,6 +337,29 @@ export default function DonorPage() {
               )}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section className="card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-display text-lg font-semibold">Events attended</h2>
+          <form onSubmit={addAttendance} className="flex flex-wrap items-center gap-2">
+            <input list="event-list" className="input w-64" placeholder="e.g. Love That Smile 2026" value={newEvent}
+              onChange={(e) => setNewEvent(e.target.value)} />
+            <datalist id="event-list">
+              {events.map((e) => <option key={e} value={e} />)}
+            </datalist>
+            <button className="btn btn-secondary btn-sm" disabled={!newEvent.trim()}>+ Add event</button>
+          </form>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {attended.map((a) => (
+            <span key={a.id} className="pill pill-good gap-2">
+              {a.event_name}
+              <button className="font-bold" title="Remove" onClick={() => removeAttendance(a)}>×</button>
+            </span>
+          ))}
+          {attended.length === 0 && <p className="muted text-sm">No events recorded. Attendee lists you import show up here.</p>}
         </div>
       </section>
 

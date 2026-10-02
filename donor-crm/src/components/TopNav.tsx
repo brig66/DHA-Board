@@ -19,6 +19,7 @@ export default function TopNav({ profile, openDuplicates }: { profile: Profile; 
   const links = [
     { href: "/dashboard", label: "Dashboard" },
     { href: "/donors", label: "Donors" },
+    { href: "/board", label: "Board" },
     { href: "/email", label: "Email" },
     { href: "/import", label: "Import" },
     { href: "/duplicates", label: "Possible Duplicates", badge: openDuplicates },

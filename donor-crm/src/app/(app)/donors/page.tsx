@@ -30,6 +30,7 @@ function DonorList() {
   const [year, setYear] = useState("");
   const [notSince, setNotSince] = useState("");
   const [emailOnly, setEmailOnly] = useState(false);
+  const [kind, setKind] = useState<"" | "donors" | "attendees">("");
   const [sort, setSort] = useState<SortKey>("name");
   const [asc, setAsc] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -42,7 +43,15 @@ function DonorList() {
   }, []);
 
   const eventOptions = useMemo(
-    () => Array.from(new Set(contacts.flatMap((c) => (c.events ? c.events.split("; ") : [])))).sort(),
+    () =>
+      Array.from(
+        new Set(
+          contacts.flatMap((c) => [
+            ...(c.events ? c.events.split("; ") : []),
+            ...(c.events_attended ? c.events_attended.split("; ") : []),
+          ])
+        )
+      ).sort(),
     [contacts]
   );
   const yearOptions = useMemo(
@@ -57,6 +66,7 @@ function DonorList() {
         const hay = [
           c.first_name,
           c.last_name,
+          c.organization,
           c.email,
           ...c.alt_emails,
           c.phone,
@@ -72,7 +82,14 @@ function DonorList() {
         const phoneHit = digits.length >= 4 && [c.phone, ...c.alt_phones].join(" ").replace(/\D/g, "").includes(digits);
         if (!hay.includes(q) && !phoneHit) return false;
       }
-      if (event && !(c.events ?? "").split("; ").includes(event)) return false;
+      if (
+        event &&
+        !(c.events ?? "").split("; ").includes(event) &&
+        !(c.events_attended ?? "").split("; ").includes(event)
+      )
+        return false;
+      if (kind === "donors" && c.gift_count === 0) return false;
+      if (kind === "attendees" && c.gift_count > 0) return false;
       if (year && !c.gift_years.includes(Number(year))) return false;
       if (notSince && c.gift_years.some((y) => y >= Number(notSince))) return false;
       if (emailOnly && (!c.email || c.do_not_email || c.is_anonymous)) return false;
@@ -102,7 +119,7 @@ function DonorList() {
       return asc ? cmp : -cmp;
     });
     return rows;
-  }, [contacts, search, event, year, notSince, emailOnly, sort, asc]);
+  }, [contacts, search, event, year, notSince, emailOnly, kind, sort, asc]);
 
   function toggleSort(k: SortKey) {
     if (sort === k) setAsc(!asc);
@@ -137,15 +154,16 @@ function DonorList() {
     downloadCsv(
       `DHA donors ${new Date().toISOString().slice(0, 10)}.csv`,
       [
-        "First Name", "Last Name", "Email", "Other Emails", "Phone", "Other Phones", "Address", "City",
+        "First Name", "Last Name", "Organization", "Email", "Other Emails", "Phone", "Other Phones", "Address", "City",
         "State", "Zip", "Total Given", "Number of Gifts", "First Gift", "Last Gift", "Last Gift Amount",
-        "Last Gift Event", "All Events", "Years Given", "Do Not Email", "Notes",
+        "Last Gift Event", "All Events", "Years Given", "Events Attended", "Do Not Email", "Notes",
       ],
       rows.map((c) => [
-        c.first_name, c.last_name, c.email, c.alt_emails.join("; "), c.phone, c.alt_phones.join("; "),
+        c.first_name, c.last_name, c.organization, c.email, c.alt_emails.join("; "), c.phone, c.alt_phones.join("; "),
         c.address, c.city, c.state, c.zip, Number(c.total_given).toFixed(2), c.gift_count, c.first_gift_date,
         c.last_gift_date, c.last_gift_amount === null ? "" : Number(c.last_gift_amount).toFixed(2),
-        c.last_gift_event, c.events, [...c.gift_years].sort().join(", "), c.do_not_email ? "Yes" : "",
+        c.last_gift_event, c.events, [...c.gift_years].sort().join(", "), c.events_attended,
+        c.do_not_email ? "Yes" : "",
         c.notes,
       ])
     );
@@ -169,7 +187,7 @@ function DonorList() {
         <div>
           <h1 className="font-display text-2xl font-semibold">Donors</h1>
           <p className="muted text-sm">
-            {shown.length} of {contacts.length} donors shown. Click a column heading to sort.
+            {shown.length} of {contacts.length} contacts shown. Click a column heading to sort.
           </p>
         </div>
         <Link href="/donors/new" className="btn btn-primary">
@@ -177,7 +195,7 @@ function DonorList() {
         </Link>
       </div>
 
-      <div className="card grid gap-3 p-4 md:grid-cols-6">
+      <div className="card grid gap-3 p-4 md:grid-cols-7">
         <div className="md:col-span-2">
           <label className="label">Search</label>
           <input
@@ -188,7 +206,7 @@ function DonorList() {
           />
         </div>
         <div>
-          <label className="label">Event</label>
+          <label className="label">Event (gave or attended)</label>
           <select className="input mt-1" value={event} onChange={(e) => setEvent(e.target.value)}>
             <option value="">All events</option>
             {eventOptions.map((e) => (
@@ -214,6 +232,14 @@ function DonorList() {
                 Not in {y} or later
               </option>
             ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">Show</label>
+          <select className="input mt-1" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+            <option value="">Everyone</option>
+            <option value="donors">Donors (gave at least once)</option>
+            <option value="attendees">Attended only, no gifts yet</option>
           </select>
         </div>
         <label className="flex items-end gap-2 pb-2 text-sm">
@@ -264,6 +290,9 @@ function DonorList() {
                     {c.last_name || c.first_name ? `${c.last_name}${c.last_name && c.first_name ? ", " : ""}${c.first_name}` : "(no name)"}
                   </Link>
                   {c.do_not_email && <span className="pill pill-bad ml-2">Do not email</span>}
+                  {c.organization && c.organization !== c.last_name && (
+                    <div className="muted text-xs">{c.organization}</div>
+                  )}
                 </td>
                 <td className="break-all">
                   {c.email ?? <span className="muted">—</span>}
@@ -281,8 +310,16 @@ function DonorList() {
                   </div>
                 </td>
                 <td>
-                  {shortDate(c.last_gift_date)}
-                  <div className="muted text-xs">{c.last_gift_event}</div>
+                  {c.last_gift_date ? (
+                    <>
+                      {money(c.last_gift_amount)} <span className="muted">on</span> {shortDate(c.last_gift_date)}
+                      <div className="muted text-xs">{c.last_gift_event}</div>
+                    </>
+                  ) : (
+                    <span className="muted text-xs">
+                      {c.events_attended ? `No gifts yet · attended ${c.events_attended}` : "No gifts yet"}
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}

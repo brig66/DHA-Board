@@ -65,8 +65,10 @@ export default function DashboardPage() {
       .sort((a, b) => (b.last_gift_date ?? "").localeCompare(a.last_gift_date ?? ""));
 
     const repeat = named.filter((c) => c.gift_years.length > 1).length;
+    const donors = named.filter((c) => c.gift_count > 0).length;
+    const attendeesOnly = named.filter((c) => c.gift_count === 0 && c.events_attended).length;
 
-    return { named, total, events, renewals, thankYous, repeat };
+    return { named, total, events, renewals, thankYous, repeat, donors, attendeesOnly };
   }, [contacts, gifts]);
 
   function emailGroup(list: ContactSummary[], template: string) {
@@ -84,8 +86,9 @@ export default function DashboardPage() {
         <p className="muted text-sm">A snapshot of every donor and gift in the CRM.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <Tile label="Donors" value={stats.named.length.toLocaleString()} />
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+        <Tile label="Donors" value={stats.donors.toLocaleString()} />
+        <Tile label="Event guests, no gifts yet" value={stats.attendeesOnly.toLocaleString()} />
         <Tile label="Total raised" value={money(stats.total)} />
         <Tile label="Gifts recorded" value={gifts.length.toLocaleString()} />
         <Tile label="Gave in 2+ years" value={stats.repeat.toLocaleString()} />

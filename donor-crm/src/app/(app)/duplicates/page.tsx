@@ -42,7 +42,11 @@ export default function DuplicatesPage() {
   async function merge(p: Pair, keep: ContactSummary, remove: ContactSummary) {
     if (!confirm(`Merge ${fullName(remove)} into ${fullName(keep)}? All gifts and emails move to ${fullName(keep)}, and ${fullName(remove)}'s other email, phone, and address are kept as alternates.`)) return;
     setBusy(p.id);
-    const { error } = await createClient().rpc("merge_contacts", { keep_id: keep.id, remove_id: remove.id });
+    const supabase = createClient();
+    const ids = { keep_id: keep.id, remove_id: remove.id };
+    // Move event attendance, business name, and board flag first, then merge.
+    let { error } = await supabase.rpc("prepare_merge", ids);
+    if (!error) ({ error } = await supabase.rpc("merge_contacts", ids));
     setBusy(null);
     if (error) return setError(error.message);
     await load();
@@ -99,7 +103,11 @@ export default function DuplicatesPage() {
                   <dt className="muted">Gifts</dt>
                   <dd>{c.gift_count} totaling {money(c.total_given)}</dd>
                   <dt className="muted">Last gift</dt>
-                  <dd>{shortDate(c.last_gift_date)} · {c.last_gift_event}</dd>
+                  <dd>{c.last_gift_date ? `${shortDate(c.last_gift_date)} · ${c.last_gift_event}` : "—"}</dd>
+                  <dt className="muted">Organization</dt>
+                  <dd>{c.organization || "—"}</dd>
+                  <dt className="muted">Events attended</dt>
+                  <dd>{c.events_attended || "—"}</dd>
                 </dl>
                 <button
                   className="btn btn-primary btn-sm mt-3"
