@@ -29,7 +29,7 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
+    <main className="flex flex-1 items-center justify-center px-4">
       <div className="card w-full max-w-sm p-8">
         <h1 className="font-display text-xl font-semibold text-ink">Sign in</h1>
         <p className="mt-1 text-sm text-[#5c584d]">Welcome back to {orgName}.</p>

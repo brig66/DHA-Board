@@ -21,7 +21,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   if (!profile.is_active) {
     return (
-      <main className="flex min-h-screen items-center justify-center px-4">
+      <main className="flex flex-1 items-center justify-center px-4">
         <div className="card max-w-md p-8 text-center">
           <h1 className="font-display text-xl font-semibold text-ink">
             Your account is awaiting activation
