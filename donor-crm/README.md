@@ -57,23 +57,24 @@ Only DHA staff who have been activated can see any donor information.
 
 ## One-time setup
 
-### Step 1: Database (Supabase)
+The database (Supabase project **DHA-CRM**) is already set up. It holds all
+379 gifts from the 2018 to 2022 Giving Day reports and the email-sending
+function. Four steps remain.
 
-1. Sign in at [supabase.com](https://supabase.com) and click **New project**.
-2. Name it `dha-crm` and pick the US East region. Save the database password
-   somewhere safe.
-3. Once the project is ready, tell Claude "the dha-crm project is created."
-   Claude will finish the database setup, turn on email sending, and load the
-   donors from the Giving Day files.
+### Step 1: Run the finishing script (2 minutes)
 
-If you'd rather do it yourself, see **Manual database setup** at the bottom
-of this guide.
+1. Open [supabase.com](https://supabase.com/dashboard), open the **DHA-CRM**
+   project, and click **SQL Editor** in the left sidebar, then **New query**.
+2. Open the file `donor-crm/supabase/finish-setup.sql` in this repository.
+   Select all of its text, copy it, paste it into the editor, and click
+   **Run**. You should see "Setup complete." This turns on the "Same person —
+   keep this one" button on the Possible Duplicates page and removes public
+   access to internal functions.
 
 ### Step 2: Let SMTP2GO send as dentalhealtharlington.org (one time)
 
-Emails are sent through SMTP2GO, the same service AIM already uses. For emails
-to arrive "From" `info@dentalhealtharlington.org`, the DHA domain has to be
-verified there:
+Emails are sent through AIM's SMTP2GO account. For emails to arrive "From"
+`info@dentalhealtharlington.org`, the DHA domain has to be verified there:
 
 1. In [SMTP2GO](https://app.smtp2go.com), open **Sending → Verified Senders →
    Add Sender Domain**, and enter `dentalhealtharlington.org`.
@@ -88,18 +89,20 @@ Email sending**.
 1. Go to [vercel.com](https://vercel.com). Sign in with GitHub, then choose
    **Add New… → Project** and select the `dha-board` repository.
 2. Next to **Root Directory**, click **Edit** and choose `donor-crm`.
-3. Open **Environment Variables** and add these two. The values are in
-   Supabase under **Project Settings → API**.
+3. Open **Environment Variables** and add these two exactly as shown:
 
    | Name | Value |
    |---|---|
-   | `NEXT_PUBLIC_SUPABASE_URL` | the Project URL |
-   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the `anon` `public` key |
+   | `NEXT_PUBLIC_SUPABASE_URL` | `https://hriclsxzlnekbvuvycba.supabase.co` |
+   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhyaWNsc3h6bG5la2J2dXZ5Y2JhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5MDk3MTUsImV4cCI6MjEwNjQ4NTcxNX0.1ETtPldtBCbd7CHMIDXcaYYXyoS8N8AplgHUQzCO52w` |
+
+   (This key is designed to be public. On its own it can't read any donor
+   information; only activated staff who sign in can.)
 
 4. Click **Deploy**. Vercel gives you the web address for the CRM.
-5. In Supabase, go to **Authentication → URL Configuration** and set **Site
-   URL** to that web address. This makes the sign-up confirmation emails link
-   back to the CRM.
+5. Back in Supabase (DHA-CRM project), go to **Authentication → URL
+   Configuration** and set **Site URL** to that web address, so sign-up
+   confirmation emails link back to the CRM.
 
 ### Step 4: Create your admin account and invite staff
 
@@ -107,16 +110,8 @@ Email sending**.
    email, and sign in. As the first person, you're the admin.
 2. Send the address to DHA staff. After they sign up, open **Settings** and
    click **Pending** next to their name to activate them.
-
-### Step 5: Load the donor history (skip if Claude already did)
-
-Open **Import**, click **Choose file(s)**, and select all five
-`crm_20XX_ntx_giving_day.csv` files. Then click **Import**. The result should
-be:
-
-- 379 gifts
-- 203 donors, plus one combined "Anonymous Donors" record
-- 8 pairs on the **Possible Duplicates** page to review
+3. Open **Email**, choose the "Thank you for your gift" template, add yourself
+   or one donor, and click **Send a test to me** to confirm emails arrive.
 
 ## Day to day
 
@@ -138,17 +133,19 @@ be:
 Importing directly from the donation software, so new gifts appear without
 uploading a spreadsheet.
 
-## Manual database setup (only if not done by Claude)
+## Rebuilding the database from scratch (only if ever needed)
 
-1. In Supabase, open **SQL Editor → New query**. Paste the whole contents of
-   `donor-crm/supabase/setup.sql` and click **Run**.
+1. In a new Supabase project, run `donor-crm/supabase/setup.sql` and then
+   `donor-crm/supabase/finish-setup.sql` in the SQL Editor.
 2. Open **Edge Functions → Deploy a new function → Via Editor**. Name it
    `send-email`, paste the contents of
    `donor-crm/supabase/functions/send-email/index.ts`, and click **Deploy**.
-3. Back in **SQL Editor**, run this line with the real SMTP2GO API key
-   (SMTP2GO → **Sending → API Keys**):
+3. In the SQL Editor, store the SMTP2GO API key (SMTP2GO → **Sending → API
+   Keys**):
 
    ```sql
    insert into private.secrets (name, value) values ('smtp2go_api_key', 'PASTE-KEY-HERE')
    on conflict (name) do update set value = excluded.value;
    ```
+
+4. Sign in to the CRM and upload the Giving Day files on the **Import** page.

@@ -38,8 +38,7 @@ begin
 end;
 $$;
 
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
+create or replace trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
@@ -166,7 +165,10 @@ language sql
 stable
 security definer set search_path = private
 as $$
-  select value from private.secrets where name = secret_name;
+  -- answers only the email function running on Supabase's servers
+  select value from private.secrets
+  where name = secret_name
+    and coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '') = 'service_role';
 $$;
 revoke all on function public.get_secret(text) from public, anon, authenticated;
 grant execute on function public.get_secret(text) to service_role;
