@@ -441,6 +441,18 @@ begin
         limit 1;
       end if;
 
+      -- 3) a name-only entry (offline cash/check, no email, phone or address)
+      --    belongs to the one existing donor with that name, if exactly one
+      if v_match is null and v_email is null and public.phone_digits(v_phone) is null
+         and public.addr_key(v_addr) is null then
+        select min(c.id::text)::uuid into v_match
+        from public.contacts c
+        where not c.is_anonymous
+          and public.first_compat(c.first_name, v_first)
+          and public.last_compat(c.last_name, v_last)
+        having count(*) = 1;
+      end if;
+
       if v_match is null then
         insert into public.contacts
           (first_name, last_name, email, phone, address, city, state, zip, country, info_date)
