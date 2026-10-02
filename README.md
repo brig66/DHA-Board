@@ -115,3 +115,9 @@ documents and comments.
 
 If you want any of these addressed, or want features like email digests,
 agendas, or e-signatures for meeting minutes, that's a natural next phase.
+
+## Donor CRM
+
+The `donor-crm` folder holds a separate app: the DHA Donor CRM, for tracking
+donors, gifts, and thank-you and renewal emails. It has its own database and
+web address. Setup steps are in [`donor-crm/README.md`](donor-crm/README.md).
