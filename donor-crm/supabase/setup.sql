@@ -106,6 +106,21 @@ create table if not exists public.donations (
 create index if not exists donations_contact_idx on public.donations (contact_id);
 create index if not exists donations_date_idx on public.donations (gift_date);
 
+-- Added later: business/foundation name, and what kind of gift each one is
+alter table public.contacts add column if not exists organization text;
+alter table public.donations add column if not exists gift_type text not null default 'Donation';
+alter table public.contacts add column if not exists is_board_member boolean not null default false;
+
+-- Who came to which event (from attendee lists; no dollar amount)
+create table if not exists public.event_attendance (
+  id uuid primary key default gen_random_uuid(),
+  contact_id uuid not null references public.contacts (id) on delete cascade,
+  event_name text not null,
+  source text,
+  created_at timestamptz not null default now(),
+  unique (contact_id, event_name)
+);
+
 create table if not exists public.possible_duplicates (
   id uuid primary key default gen_random_uuid(),
   contact_a uuid not null references public.contacts (id) on delete cascade,
@@ -179,7 +194,9 @@ grant execute on function public.get_secret(text) to service_role;
 create or replace view public.contact_summary
 with (security_invoker = true) as
 select
-  c.*,
+  c.id, c.first_name, c.last_name, c.email, c.alt_emails, c.phone, c.alt_phones,
+  c.address, c.city, c.state, c.zip, c.country, c.notes, c.do_not_email, c.is_anonymous,
+  c.info_date, c.created_at, c.updated_at,
   coalesce(s.total_given, 0) as total_given,
   coalesce(s.gift_count, 0) as gift_count,
   s.first_gift_date,
@@ -188,7 +205,10 @@ select
   s.last_gift_event,
   coalesce(s.events, '') as events,
   coalesce(s.gift_years, '{}') as gift_years,
-  e.last_emailed_at
+  e.last_emailed_at,
+  c.organization,
+  coalesce(a.events_attended, '') as events_attended,
+  c.is_board_member
 from public.contacts c
 left join lateral (
   select
@@ -207,7 +227,12 @@ left join lateral (
   select max(l.sent_at) as last_emailed_at
   from public.email_log l
   where l.contact_id = c.id and l.status = 'sent'
-) e on true;
+) e on true
+left join lateral (
+  select string_agg(x.event_name, '; ' order by x.event_name) as events_attended
+  from public.event_attendance x
+  where x.contact_id = c.id
+) a on true;
 
 -- ---------------------------------------------------------------------------
 -- Matching helpers used for de-duplication
@@ -362,10 +387,197 @@ as $$
 $$;
 
 -- ---------------------------------------------------------------------------
--- Import: takes a list of gift rows (already read from a spreadsheet by the
--- website), matches each to an existing donor or creates a new one, and
--- skips any gift that was already imported (same tracking number).
+-- Import: finds the donor a spreadsheet row belongs to (or creates one), then
+-- records the gift or event attendance. Shared matching rules:
+--   1) same email and a compatible first name
+--   2) same name and the same phone or street address
+--   3) a name-only entry belongs to the one existing donor with that name
+--   4) exactly the same full name as one existing donor
+--   Businesses (no first name) match on business name or email.
+-- Uncertain cases go to the "Possible duplicates" screen.
 -- ---------------------------------------------------------------------------
+create or replace function public.contact_for_row(r jsonb, v_date date, out contact_id uuid, out created boolean)
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_first text := coalesce(trim(r ->> 'first_name'), '');
+  v_last text := coalesce(trim(r ->> 'last_name'), '');
+  v_email text := nullif(lower(trim(r ->> 'email')), '');
+  v_phone text := nullif(trim(r ->> 'phone'), '');
+  v_addr text := nullif(trim(r ->> 'address'), '');
+  v_org text := nullif(trim(r ->> 'organization'), '');
+  v_match uuid;
+  v_contact public.contacts;
+  v_other record;
+begin
+  created := false;
+
+  if coalesce((r ->> 'anonymous')::boolean, false) then
+    select c.id into v_match from public.contacts c where c.is_anonymous limit 1;
+    if v_match is null then
+      insert into public.contacts (first_name, last_name, is_anonymous, do_not_email, notes)
+      values ('Anonymous', 'Donors', true, true,
+              'All gifts made anonymously are grouped here. The donation platform does not share these donors'' names or contact details.')
+      returning id into v_match;
+      created := true;
+    end if;
+    contact_id := v_match;
+    return;
+  end if;
+
+  if v_first = '' and v_last <> '' then
+    -- a business or foundation: same business name, or same email
+    select c.id into v_match
+    from public.contacts c
+    where not c.is_anonymous and c.first_name = ''
+      and (regexp_replace(lower(c.last_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(v_last), '[^a-z0-9]', '', 'g')
+           or public.contact_has_email(c, v_email))
+    order by c.created_at
+    limit 1;
+  else
+    -- 1) same email and a compatible first name
+    select c.id into v_match
+    from public.contacts c
+    where not c.is_anonymous
+      and public.contact_has_email(c, v_email)
+      and public.first_compat(c.first_name, v_first)
+    order by c.created_at
+    limit 1;
+
+    -- 2) same name and the same phone or street address
+    if v_match is null then
+      select c.id into v_match
+      from public.contacts c
+      where not c.is_anonymous
+        and public.first_compat(c.first_name, v_first)
+        and public.last_compat(c.last_name, v_last)
+        and (public.contact_has_phone(c, v_phone)
+             or (public.addr_key(v_addr) is not null and public.addr_key(c.address) = public.addr_key(v_addr)))
+      order by c.created_at
+      limit 1;
+    end if;
+
+    -- 3) a name-only entry (offline cash/check, no email, phone or address)
+    --    belongs to the one existing donor with that name, if exactly one
+    if v_match is null and v_email is null and public.phone_digits(v_phone) is null
+       and public.addr_key(v_addr) is null then
+      select min(c.id::text)::uuid into v_match
+      from public.contacts c
+      where not c.is_anonymous
+        and public.first_compat(c.first_name, v_first)
+        and public.last_compat(c.last_name, v_last)
+      having count(*) = 1;
+    end if;
+
+    -- 4) exactly the same first and last name as one existing donor (with a
+    --    new email or phone, kept as an alternate)
+    if v_match is null and public.norm_first(v_first) <> '' and length(public.norm_last(v_last)) >= 2 then
+      select min(c.id::text)::uuid into v_match
+      from public.contacts c
+      where not c.is_anonymous
+        and public.norm_first(c.first_name) = public.norm_first(v_first)
+        and public.norm_last(c.last_name) = public.norm_last(v_last)
+      having count(*) = 1;
+    end if;
+  end if;
+
+  if v_match is null then
+    insert into public.contacts
+      (first_name, last_name, organization, email, phone, address, city, state, zip, country, info_date)
+    values
+      (v_first, v_last, v_org, v_email, v_phone, v_addr,
+       nullif(trim(r ->> 'city'), ''), nullif(trim(r ->> 'state'), ''),
+       nullif(trim(r ->> 'zip'), ''), nullif(trim(r ->> 'country'), ''), v_date)
+    returning id into v_match;
+    created := true;
+
+    -- send uncertain cases to the "Possible duplicates" screen
+    for v_other in
+      select c.id,
+        case
+          when public.contact_has_email(c, v_email) then 'Same email address, different first name'
+          when public.contact_has_phone(c, v_phone) then 'Same phone number, different name'
+          else 'Same name, but no matching phone or address'
+        end as why
+      from public.contacts c
+      where c.id <> v_match and not c.is_anonymous
+        and (
+          public.contact_has_email(c, v_email)
+          or (public.contact_has_phone(c, v_phone) and public.last_compat(c.last_name, v_last))
+          or (public.first_compat(c.first_name, v_first) and public.last_compat(c.last_name, v_last))
+        )
+    loop
+      perform public.flag_duplicate(v_other.id, v_match, v_other.why);
+    end loop;
+  else
+    select * into v_contact from public.contacts where id = v_match;
+
+    if v_date is not null and (v_contact.info_date is null or v_date >= v_contact.info_date) then
+      -- newer gift: its details become the primary ones
+      update public.contacts set
+        first_name = case when v_first <> '' then v_first else first_name end,
+        -- same surname spelled two ways (Odom-Wesley / OdomWesley): keep the fuller one
+        last_name = case
+          when v_last = '' then last_name
+          when public.norm_last(v_last) = public.norm_last(last_name)
+            and length(last_name) > length(v_last) then last_name
+          else v_last end,
+        organization = coalesce(v_org, organization),
+        email = coalesce(v_email, email),
+        alt_emails = case
+          when v_email is not null and email is not null and lower(email) <> v_email
+            and not (email = any(alt_emails)) then array_append(alt_emails, email)
+          else alt_emails end,
+        phone = case when public.phone_digits(v_phone) is not null then v_phone else coalesce(phone, v_phone) end,
+        alt_phones = case
+          when public.phone_digits(v_phone) is not null and phone is not null
+            and public.phone_digits(phone) is distinct from public.phone_digits(v_phone)
+            and not (phone = any(alt_phones)) then array_append(alt_phones, phone)
+          else alt_phones end,
+        address = coalesce(v_addr, address),
+        city = case when v_addr is not null then nullif(trim(r ->> 'city'), '') else city end,
+        state = case when v_addr is not null then nullif(trim(r ->> 'state'), '') else state end,
+        zip = case when v_addr is not null then nullif(trim(r ->> 'zip'), '') else zip end,
+        country = case when v_addr is not null then nullif(trim(r ->> 'country'), '') else country end,
+        info_date = v_date,
+        updated_at = now()
+      where id = v_match;
+      -- the old email may now equal the new primary; tidy alternates
+      update public.contacts
+      set alt_emails = array(select distinct x from unnest(alt_emails) x where lower(x) <> lower(coalesce(email, ''))),
+          alt_phones = array(select distinct x from unnest(alt_phones) x
+                             where public.phone_digits(x) is distinct from public.phone_digits(phone))
+      where id = v_match;
+    else
+      -- older gift (or an undated attendee list): keep current details,
+      -- fill in anything missing and remember any other email/phone
+      update public.contacts set
+        organization = coalesce(organization, v_org),
+        email = coalesce(email, v_email),
+        alt_emails = case
+          when v_email is not null and email is not null and not public.contact_has_email(contacts, v_email)
+            then array_append(alt_emails, v_email)
+          else alt_emails end,
+        phone = coalesce(phone, v_phone),
+        alt_phones = case
+          when public.phone_digits(v_phone) is not null and phone is not null
+            and not public.contact_has_phone(contacts, v_phone) then array_append(alt_phones, v_phone)
+          else alt_phones end,
+        address = coalesce(address, v_addr),
+        city = case when address is null and v_addr is not null then nullif(trim(r ->> 'city'), '') else city end,
+        state = case when address is null and v_addr is not null then nullif(trim(r ->> 'state'), '') else state end,
+        zip = case when address is null and v_addr is not null then nullif(trim(r ->> 'zip'), '') else zip end,
+        country = case when address is null and v_addr is not null then nullif(trim(r ->> 'country'), '') else country end,
+        updated_at = now()
+      where id = v_match;
+    end if;
+  end if;
+
+  contact_id := v_match;
+end;
+$$;
+
 create or replace function public.import_donations(rows jsonb, source_label text default 'Spreadsheet import')
 returns jsonb
 language plpgsql
@@ -373,12 +585,14 @@ set search_path = public
 as $$
 declare
   r jsonb;
-  v_first text; v_last text; v_email text; v_phone text; v_addr text;
-  v_date date; v_time time; v_tracking text; v_anon boolean;
-  v_contact public.contacts;
-  v_match uuid;
-  v_other record;
-  added int := 0; skipped int := 0; new_contacts int := 0; matched int := 0; flagged int := 0;
+  v_date date;
+  v_tracking text;
+  v_amount numeric;
+  v_email text;
+  v_last text;
+  v_contact uuid;
+  v_created boolean;
+  added int := 0; skipped int := 0; reentered int := 0; new_contacts int := 0; matched int := 0; flagged int := 0;
   before_flags int;
 begin
   if auth.uid() is not null and not public.is_staff() then
@@ -389,7 +603,9 @@ begin
 
   for r in
     select value from jsonb_array_elements(rows)
-    order by (value ->> 'gift_date')::date, coalesce(value ->> 'gift_time', '00:00')
+    -- re-entry checks run last, so the original gift is already in place
+    order by coalesce((value ->> 'check_reentry')::boolean, false),
+             (value ->> 'gift_date')::date, coalesce(value ->> 'gift_time', '00:00')
   loop
     v_tracking := nullif(trim(r ->> 'tracking_no'), '');
     if v_tracking is not null and exists (select 1 from public.donations where tracking_no = v_tracking) then
@@ -397,145 +613,43 @@ begin
       continue;
     end if;
 
-    v_first := coalesce(trim(r ->> 'first_name'), '');
-    v_last := coalesce(trim(r ->> 'last_name'), '');
-    v_email := nullif(lower(trim(r ->> 'email')), '');
-    v_phone := nullif(trim(r ->> 'phone'), '');
-    v_addr := nullif(trim(r ->> 'address'), '');
     v_date := (r ->> 'gift_date')::date;
-    v_time := nullif(r ->> 'gift_time', '')::time;
-    v_anon := coalesce((r ->> 'anonymous')::boolean, false);
-    v_match := null;
+    v_amount := coalesce(nullif(r ->> 'amount', '')::numeric, 0);
 
-    if v_anon then
-      select id into v_match from public.contacts where is_anonymous limit 1;
-      if v_match is null then
-        insert into public.contacts (first_name, last_name, is_anonymous, do_not_email, notes)
-        values ('Anonymous', 'Donors', true, true,
-                'All gifts made anonymously are grouped here. The donation platform does not share these donors'' names or contact details.')
-        returning id into v_match;
-        new_contacts := new_contacts + 1;
-      else
-        matched := matched + 1;
-      end if;
-    else
-      -- 1) same email and a compatible first name
-      select c.id into v_match
-      from public.contacts c
-      where not c.is_anonymous
-        and public.contact_has_email(c, v_email)
-        and public.first_compat(c.first_name, v_first)
-      order by c.created_at
-      limit 1;
-
-      -- 2) same name and the same phone or street address
-      if v_match is null then
-        select c.id into v_match
-        from public.contacts c
-        where not c.is_anonymous
-          and public.first_compat(c.first_name, v_first)
-          and public.last_compat(c.last_name, v_last)
-          and (public.contact_has_phone(c, v_phone)
-               or (public.addr_key(v_addr) is not null and public.addr_key(c.address) = public.addr_key(v_addr)))
-        order by c.created_at
-        limit 1;
-      end if;
-
-      if v_match is null then
-        insert into public.contacts
-          (first_name, last_name, email, phone, address, city, state, zip, country, info_date)
-        values
-          (v_first, v_last, v_email, v_phone, v_addr,
-           nullif(trim(r ->> 'city'), ''), nullif(trim(r ->> 'state'), ''),
-           nullif(trim(r ->> 'zip'), ''), nullif(trim(r ->> 'country'), ''), v_date)
-        returning id into v_match;
-        new_contacts := new_contacts + 1;
-
-        -- send uncertain cases to the "Possible duplicates" screen
-        for v_other in
-          select c.id,
-            case
-              when public.contact_has_email(c, v_email) then 'Same email address, different first name'
-              when public.contact_has_phone(c, v_phone) then 'Same phone number, different name'
-              else 'Same name, but no matching phone or address'
-            end as why
-          from public.contacts c
-          where c.id <> v_match and not c.is_anonymous
-            and (
-              public.contact_has_email(c, v_email)
-              or (public.contact_has_phone(c, v_phone) and public.last_compat(c.last_name, v_last))
-              or (public.first_compat(c.first_name, v_first) and public.last_compat(c.last_name, v_last))
-            )
-        loop
-          perform public.flag_duplicate(v_other.id, v_match, v_other.why);
-        end loop;
-      else
-        matched := matched + 1;
-        select * into v_contact from public.contacts where id = v_match;
-
-        if v_contact.info_date is null or v_date >= v_contact.info_date then
-          -- newer gift: its details become the primary ones
-          update public.contacts set
-            first_name = case when v_first <> '' then v_first else first_name end,
-            -- same surname spelled two ways (Odom-Wesley / OdomWesley): keep the fuller one
-            last_name = case
-              when v_last = '' then last_name
-              when public.norm_last(v_last) = public.norm_last(last_name)
-                and length(last_name) > length(v_last) then last_name
-              else v_last end,
-            email = coalesce(v_email, email),
-            alt_emails = case
-              when v_email is not null and email is not null and lower(email) <> v_email
-                and not (email = any(alt_emails)) then array_append(alt_emails, email)
-              else alt_emails end,
-            phone = case when public.phone_digits(v_phone) is not null then v_phone else coalesce(phone, v_phone) end,
-            alt_phones = case
-              when public.phone_digits(v_phone) is not null and phone is not null
-                and public.phone_digits(phone) is distinct from public.phone_digits(v_phone)
-                and not (phone = any(alt_phones)) then array_append(alt_phones, phone)
-              else alt_phones end,
-            address = coalesce(v_addr, address),
-            city = case when v_addr is not null then nullif(trim(r ->> 'city'), '') else city end,
-            state = case when v_addr is not null then nullif(trim(r ->> 'state'), '') else state end,
-            zip = case when v_addr is not null then nullif(trim(r ->> 'zip'), '') else zip end,
-            country = case when v_addr is not null then nullif(trim(r ->> 'country'), '') else country end,
-            info_date = v_date,
-            updated_at = now()
-          where id = v_match;
-          -- the old email may now equal the new primary; tidy alternates
-          update public.contacts
-          set alt_emails = array(select distinct x from unnest(alt_emails) x where lower(x) <> lower(coalesce(email, ''))),
-              alt_phones = array(select distinct x from unnest(alt_phones) x
-                                 where public.phone_digits(x) is distinct from public.phone_digits(phone))
-          where id = v_match;
-        else
-          -- older gift: keep current details, remember any other email/phone
-          update public.contacts set
-            email = coalesce(email, v_email),
-            alt_emails = case
-              when v_email is not null and email is not null and not public.contact_has_email(contacts, v_email)
-                then array_append(alt_emails, v_email)
-              else alt_emails end,
-            phone = coalesce(phone, v_phone),
-            alt_phones = case
-              when public.phone_digits(v_phone) is not null and phone is not null
-                and not public.contact_has_phone(contacts, v_phone) then array_append(alt_phones, v_phone)
-              else alt_phones end,
-            address = coalesce(address, v_addr),
-            updated_at = now()
-          where id = v_match;
-        end if;
+    -- Offline entries on the donation website are often staff re-typing a
+    -- gift already recorded online (North Texas Giving Day or the website
+    -- itself). Skip one when the same amount from the same donor (email or
+    -- last name, or both anonymous) is already in the CRM within 5 days and
+    -- that gift was not itself an offline entry (tracking numbers "DWO-").
+    if coalesce((r ->> 'check_reentry')::boolean, false) then
+      v_email := nullif(lower(trim(r ->> 'email')), '');
+      v_last := coalesce(trim(r ->> 'last_name'), '');
+      if exists (
+        select 1 from public.donations d join public.contacts c on c.id = d.contact_id
+        where d.amount = v_amount
+          and abs(d.gift_date - v_date) <= 5
+          and coalesce(d.tracking_no, '') not like 'DWO-%'
+          and (public.contact_has_email(c, v_email)
+               or (public.norm_last(v_last) <> '' and public.norm_last(c.last_name) = public.norm_last(v_last))
+               or (coalesce((r ->> 'anonymous')::boolean, false) and c.is_anonymous))
+      ) then
+        reentered := reentered + 1;
+        continue;
       end if;
     end if;
 
+    select f.contact_id, f.created into v_contact, v_created from public.contact_for_row(r, v_date) f;
+    if v_created then new_contacts := new_contacts + 1; else matched := matched + 1; end if;
+
     insert into public.donations
-      (contact_id, tracking_no, gift_date, gift_time, amount, net_amount, event_name, payment_method,
+      (contact_id, tracking_no, gift_date, gift_time, amount, net_amount, event_name, gift_type, payment_method,
        fundraiser_page, recognition_name, dedication, source, notes)
     values
-      (v_match, v_tracking, v_date, v_time,
-       coalesce(nullif(r ->> 'amount', '')::numeric, 0),
+      (v_contact, v_tracking, v_date, nullif(r ->> 'gift_time', '')::time,
+       v_amount,
        nullif(r ->> 'net_amount', '')::numeric,
        coalesce(nullif(trim(r ->> 'event_name'), ''), 'General donation'),
+       coalesce(nullif(trim(r ->> 'gift_type'), ''), 'Donation'),
        nullif(trim(r ->> 'payment_method'), ''),
        nullif(trim(r ->> 'fundraiser_page'), ''),
        nullif(trim(r ->> 'recognition_name'), ''),
@@ -550,8 +664,54 @@ begin
   return jsonb_build_object(
     'gifts_added', added,
     'gifts_skipped_already_imported', skipped,
+    'gifts_skipped_recorded_elsewhere', reentered,
     'new_donors', new_contacts,
     'gifts_matched_to_existing_donors', matched,
+    'possible_duplicates_flagged', flagged
+  );
+end;
+$$;
+
+-- Attendee lists (event guests, seminar registrants): adds each person to the
+-- CRM, matched to existing donors, and records that they attended the event.
+create or replace function public.import_attendees(rows jsonb, event text, source_label text default 'Attendee list')
+returns jsonb
+language plpgsql
+set search_path = public
+as $$
+declare
+  r jsonb;
+  v_contact uuid;
+  v_created boolean;
+  added int := 0; already int := 0; new_contacts int := 0; matched int := 0; flagged int := 0;
+  before_flags int;
+begin
+  if auth.uid() is not null and not public.is_staff() then
+    raise exception 'Not authorized';
+  end if;
+  if coalesce(trim(event), '') = '' then
+    raise exception 'Please enter the event name';
+  end if;
+
+  select count(*) into before_flags from public.possible_duplicates;
+
+  for r in select value from jsonb_array_elements(rows) loop
+    select f.contact_id, f.created into v_contact, v_created from public.contact_for_row(r, null) f;
+    if v_created then new_contacts := new_contacts + 1; else matched := matched + 1; end if;
+
+    insert into public.event_attendance (contact_id, event_name, source)
+    values (v_contact, trim(event), source_label)
+    on conflict do nothing;
+    if found then added := added + 1; else already := already + 1; end if;
+  end loop;
+
+  select count(*) - before_flags into flagged from public.possible_duplicates;
+
+  return jsonb_build_object(
+    'attendees_added', added,
+    'attendees_already_recorded', already,
+    'new_donors', new_contacts,
+    'matched_to_existing_donors', matched,
     'possible_duplicates_flagged', flagged
   );
 end;
@@ -583,6 +743,9 @@ begin
 
   update public.donations set contact_id = keep_id where contact_id = remove_id;
   update public.email_log set contact_id = keep_id where contact_id = remove_id;
+  update public.event_attendance x set contact_id = keep_id
+  where x.contact_id = remove_id
+    and not exists (select 1 from public.event_attendance y where y.contact_id = keep_id and y.event_name = x.event_name);
 
   update public.contacts set
     email = coalesce(k.email, d.email),
@@ -596,6 +759,8 @@ begin
       where x is not null
         and public.phone_digits(x) is distinct from public.phone_digits(coalesce(k.phone, d.phone))
     ),
+    organization = coalesce(k.organization, d.organization),
+    is_board_member = k.is_board_member or d.is_board_member,
     address = coalesce(k.address, d.address),
     city = case when k.address is null then d.city else k.city end,
     state = case when k.address is null then d.state else k.state end,
@@ -621,6 +786,31 @@ begin
 end;
 $$;
 
+-- Carries event attendance, business name and the board flag over to the
+-- record being kept. The Duplicates screen runs this just before merge_contacts.
+create or replace function public.prepare_merge(keep_id uuid, remove_id uuid)
+returns void
+language plpgsql
+set search_path = public
+as $$
+begin
+  if auth.uid() is not null and not public.is_staff() then
+    raise exception 'Not authorized';
+  end if;
+  if keep_id = remove_id then
+    return;
+  end if;
+  update public.event_attendance x set contact_id = keep_id
+  where x.contact_id = remove_id
+    and not exists (select 1 from public.event_attendance y where y.contact_id = keep_id and y.event_name = x.event_name);
+  update public.contacts k set
+    organization = coalesce(k.organization, d.organization),
+    is_board_member = k.is_board_member or d.is_board_member
+  from public.contacts d
+  where k.id = keep_id and d.id = remove_id;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Security: only signed-in, activated staff can see or change anything
 -- ---------------------------------------------------------------------------
@@ -631,6 +821,7 @@ alter table public.possible_duplicates enable row level security;
 alter table public.email_log enable row level security;
 alter table public.email_templates enable row level security;
 alter table public.settings enable row level security;
+alter table public.event_attendance enable row level security;
 
 drop policy if exists "profiles: read own or staff" on public.profiles;
 create policy "profiles: read own or staff" on public.profiles
@@ -646,7 +837,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['contacts', 'donations', 'possible_duplicates', 'email_templates'] loop
+  foreach t in array array['contacts', 'donations', 'possible_duplicates', 'email_templates', 'event_attendance'] loop
     execute format('drop policy if exists "staff full access" on public.%I', t);
     execute format(
       'create policy "staff full access" on public.%I for all to authenticated using (public.is_staff()) with check (public.is_staff())',
@@ -668,7 +859,9 @@ create policy "admin edits settings" on public.settings
 revoke all on all tables in schema public from anon;
 revoke execute on all functions in schema public from anon, public;
 grant execute on function public.is_staff(), public.is_admin(),
-  public.import_donations(jsonb, text), public.merge_contacts(uuid, uuid),
+  public.import_donations(jsonb, text), public.import_attendees(jsonb, text, text),
+  public.contact_for_row(jsonb, date), public.merge_contacts(uuid, uuid),
+  public.prepare_merge(uuid, uuid),
   public.norm_first(text), public.first_compat(text, text), public.norm_last(text),
   public.last_compat(text, text), public.phone_digits(text), public.addr_key(text),
   public.contact_has_email(public.contacts, text), public.contact_has_phone(public.contacts, text),

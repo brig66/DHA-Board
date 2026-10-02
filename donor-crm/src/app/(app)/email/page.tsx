@@ -76,7 +76,15 @@ function Composer() {
   const preview = sendable[Math.min(previewIdx, Math.max(sendable.length - 1, 0))];
 
   const eventOptions = useMemo(
-    () => Array.from(new Set(all.flatMap((c) => (c.events ? c.events.split("; ") : [])))).sort(),
+    () =>
+      Array.from(
+        new Set(
+          all.flatMap((c) => [
+            ...(c.events ? c.events.split("; ") : []),
+            ...(c.events_attended ? c.events_attended.split("; ") : []),
+          ])
+        )
+      ).sort(),
     [all]
   );
 
@@ -206,14 +214,23 @@ function Composer() {
           </h2>
           <div className="flex flex-wrap items-center gap-2">
             <select className="input w-auto" value={addEvent} onChange={(e) => setAddEvent(e.target.value)}>
-              <option value="">Add everyone from an event…</option>
+              <option value="">Add everyone who gave at or attended an event…</option>
               {eventOptions.map((e) => <option key={e}>{e}</option>)}
             </select>
             <button
               className="btn btn-secondary btn-sm"
               disabled={!addEvent}
               onClick={() => {
-                updateIds([...ids, ...all.filter((c) => (c.events ?? "").split("; ").includes(addEvent)).map((c) => c.id)]);
+                updateIds([
+                  ...ids,
+                  ...all
+                    .filter(
+                      (c) =>
+                        (c.events ?? "").split("; ").includes(addEvent) ||
+                        (c.events_attended ?? "").split("; ").includes(addEvent)
+                    )
+                    .map((c) => c.id),
+                ]);
                 setAddEvent("");
               }}
             >

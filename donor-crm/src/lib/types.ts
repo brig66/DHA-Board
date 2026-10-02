@@ -23,6 +23,8 @@ export type Contact = {
   notes: string | null;
   do_not_email: boolean;
   is_anonymous: boolean;
+  organization: string | null;
+  is_board_member: boolean;
   info_date: string | null;
   created_at: string;
   updated_at: string;
@@ -38,6 +40,7 @@ export type ContactSummary = Contact & {
   events: string;
   gift_years: number[];
   last_emailed_at: string | null;
+  events_attended: string;
 };
 
 export type Donation = {
@@ -49,12 +52,24 @@ export type Donation = {
   amount: number;
   net_amount: number | null;
   event_name: string;
+  gift_type: GiftType;
   payment_method: string | null;
   fundraiser_page: string | null;
   recognition_name: string | null;
   dedication: string | null;
   source: string | null;
   notes: string | null;
+  created_at: string;
+};
+
+export const GIFT_TYPES = ["Donation", "Event ticket / registration", "In-kind"] as const;
+export type GiftType = (typeof GIFT_TYPES)[number];
+
+export type EventAttendance = {
+  id: string;
+  contact_id: string;
+  event_name: string;
+  source: string | null;
   created_at: string;
 };
 
