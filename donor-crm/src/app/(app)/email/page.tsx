@@ -8,6 +8,10 @@ import { fetchAllContacts, getEmailRecipients, setEmailRecipients } from "@/lib/
 import { fullName, MERGE_FIELDS } from "@/lib/format";
 import { fillMergeFields } from "@/lib/merge";
 import type { ContactSummary, EmailTemplate, Settings } from "@/lib/types";
+import type { Editor } from "@tiptap/react";
+import EmailEditor from "@/components/EmailEditor";
+import EmailPreview from "@/components/EmailPreview";
+import { buildEmailHtml, hasContent, htmlToText, textToHtml } from "../../../../supabase/functions/_shared/email-html";
 
 type SendResult = {
   sent: number;
@@ -33,13 +37,13 @@ function Composer() {
   const [me, setMe] = useState<{ email: string } | null>(null);
   const [templateId, setTemplateId] = useState("");
   const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [html, setHtml] = useState("");
+  const editorRef = useRef<Editor | null>(null);
   const [previewIdx, setPreviewIdx] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
   const [result, setResult] = useState<SendResult | null>(null);
   const [addEvent, setAddEvent] = useState("");
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   const loadTemplates = async () => {
     const { data } = await createClient().from("email_templates").select("*").order("name");
@@ -65,7 +69,9 @@ function Composer() {
     setTemplateId(t?.id ?? "");
     if (t) {
       setSubject(t.subject);
-      setBody(t.body);
+      const h = t.body_html || textToHtml(t.body);
+      setHtml(h);
+      editorRef.current?.commands.setContent(h);
     }
   }
 
@@ -95,16 +101,12 @@ function Composer() {
   }
 
   function insertField(tag: string) {
-    const el = bodyRef.current;
-    if (!el) return setBody(body + tag);
-    const start = el.selectionStart ?? body.length;
-    const end = el.selectionEnd ?? body.length;
-    setBody(body.slice(0, start) + tag + body.slice(end));
-    requestAnimationFrame(() => {
-      el.focus();
-      el.selectionStart = el.selectionEnd = start + tag.length;
-    });
+    editorRef.current?.chain().focus().insertContent(tag).run();
   }
+
+  // pictures still embedded in the message (not yet saved) would be blocked by email programs
+  const unsavedPictures = /<img[^>]+src="(data|blob):/i.test(html);
+  const ready = !!subject.trim() && hasContent(html) && !unsavedPictures;
 
   async function callSend(contactIds: string[], testTo: string | null) {
     const supabase = createClient();
@@ -112,7 +114,8 @@ function Composer() {
       body: {
         contact_ids: contactIds,
         subject,
-        body,
+        body: htmlToText(html),
+        body_html: html,
         template_name: templates.find((t) => t.id === templateId)?.name ?? null,
         test_to: testTo,
       },
@@ -173,14 +176,18 @@ function Composer() {
     if (asNew || !templateId) {
       const name = prompt("Name for this template:");
       if (!name) return;
-      const { data, error } = await supabase.from("email_templates").insert({ name, subject, body }).select().single();
+      const { data, error } = await supabase
+        .from("email_templates")
+        .insert({ name, subject, body: htmlToText(html), body_html: html })
+        .select()
+        .single();
       if (error) return setMessage({ kind: "bad", text: error.message });
       await loadTemplates();
       setTemplateId((data as EmailTemplate).id);
     } else {
       const { error } = await supabase
         .from("email_templates")
-        .update({ subject, body, updated_at: new Date().toISOString() })
+        .update({ subject, body: htmlToText(html), body_html: html, updated_at: new Date().toISOString() })
         .eq("id", templateId);
       if (error) return setMessage({ kind: "bad", text: error.message });
       await loadTemplates();
@@ -280,7 +287,7 @@ function Composer() {
               </select>
             </div>
             {templateId && <button className="btn btn-secondary btn-sm" onClick={() => saveTemplate(false)}>Update template</button>}
-            <button className="btn btn-secondary btn-sm" onClick={() => saveTemplate(true)} disabled={!subject || !body}>Save as new</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => saveTemplate(true)} disabled={!ready}>Save as new</button>
             {templateId && <button className="btn btn-danger btn-sm" onClick={deleteTemplate}>Delete</button>}
           </div>
           <div>
@@ -289,7 +296,12 @@ function Composer() {
           </div>
           <div>
             <label className="label">Message</label>
-            <textarea ref={bodyRef} rows={14} className="input mt-1" value={body} onChange={(e) => setBody(e.target.value)} />
+            <EmailEditor initialHtml={html} onChange={setHtml} onReady={(e) => (editorRef.current = e)} />
+            <p className="muted mt-1 text-xs">
+              Paste formatted text from Word, Google Docs or another email, or add a picture with the 🖼 button (you can also paste or
+              drag one in). For a Canva design, download it as a PNG and add it as a picture. Click a picture to make it clickable.
+              Tip: add a sentence and a link or button under a large picture. Emails that are only a picture are more likely to land in spam.
+            </p>
           </div>
           <div>
             <div className="label">Insert donor details</div>
@@ -319,23 +331,26 @@ function Composer() {
               <div className="muted text-xs">To: {fullName(preview)} &lt;{preview.email}&gt;</div>
               <div className="mt-1 font-semibold">{fillMergeFields(subject, preview) || "(no subject)"}</div>
               <hr className="my-3 border-[var(--border)]" />
-              <div className="whitespace-pre-wrap">{fillMergeFields(body, preview)}</div>
-              {settings?.email_footer && (
-                <p className="muted mt-4 border-t border-[var(--border)] pt-2 text-xs">{settings.email_footer}</p>
-              )}
+              <EmailPreview
+                className="-mx-4 -mb-4 block w-[calc(100%+2rem)] rounded-b-lg border-0"
+                html={buildEmailHtml(fillMergeFields(html, preview, true), settings?.email_footer ?? "")}
+              />
             </div>
           ) : (
             <p className="muted text-sm">Add recipients to see a preview.</p>
           )}
 
           <div className="mt-auto flex flex-wrap gap-2 pt-2">
-            <button className="btn btn-secondary" onClick={sendTest} disabled={!!busy || !preview || !subject || !body}>
+            <button className="btn btn-secondary" onClick={sendTest} disabled={!!busy || !preview || !ready}>
               {busy === "test" ? "Sending test…" : `Send a test to me`}
             </button>
-            <button className="btn btn-primary" onClick={sendAll} disabled={!!busy || !sendable.length || !subject || !body}>
+            <button className="btn btn-primary" onClick={sendAll} disabled={!!busy || !sendable.length || !ready}>
               {busy === "send" ? "Sending…" : `Send to ${sendable.length} donor${sendable.length === 1 ? "" : "s"}`}
             </button>
           </div>
+          {unsavedPictures && (
+            <p className="text-sm text-[#b8862e]">Waiting for a pasted picture to finish saving. If it doesn&rsquo;t, remove it and add it with the 🖼 Picture button.</p>
+          )}
           {message && (
             <p className={`text-sm ${message.kind === "good" ? "text-teal-700" : "text-coral-600"}`}>{message.text}</p>
           )}
@@ -354,3 +369,4 @@ function Composer() {
     </div>
   );
 }
+

@@ -7,6 +7,8 @@ import { createClient } from "@/lib/supabase/client";
 import { setEmailRecipients } from "@/lib/data";
 import { cityLine, fullName, money, shortDate } from "@/lib/format";
 import ContactForm, { type ContactDraft } from "@/components/ContactForm";
+import EmailPreview from "@/components/EmailPreview";
+import { buildEmailHtml } from "../../../../../supabase/functions/_shared/email-html";
 import { GIFT_TYPES, type ContactSummary, type Donation, type EmailLog, type EventAttendance, type GiftType } from "@/lib/types";
 
 type GiftDraft = {
@@ -391,8 +393,14 @@ export default function DonorPage() {
                     <tr>
                       <td colSpan={4} className="whitespace-pre-wrap bg-[#faf8f3] text-sm">
                         To: {m.to_email}
-                        {"\n\n"}
-                        {m.body}
+                        {m.body_html ? (
+                          <EmailPreview className="mt-2 block w-full max-w-[640px] rounded border-0" html={buildEmailHtml(m.body_html, "")} />
+                        ) : (
+                          <>
+                            {"\n\n"}
+                            {m.body}
+                          </>
+                        )}
                       </td>
                     </tr>
                   )}
