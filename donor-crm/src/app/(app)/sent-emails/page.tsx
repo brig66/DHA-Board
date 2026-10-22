@@ -347,7 +347,7 @@ export default function SentEmailsPage() {
             </select>
           </div>
           <div>
-            <label className="label">Mailing</label>
+            <label className="label block">Mailing</label>
             <select className="input mt-1 max-w-[16rem]" value={mailing} onChange={(e) => setMailing(e.target.value)}>
               <option value="">All mailings</option>
               {mailings.map((g) => (
