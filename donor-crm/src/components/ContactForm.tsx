@@ -98,6 +98,11 @@ export default function ContactForm({
         />
         Do not email this donor (they asked to be removed)
       </label>
+      {(initial as { unsubscribed_at?: string | null }).unsubscribed_at && !d.do_not_email && (
+        <p className="-mt-2 text-sm text-[#b8862e] md:col-span-6">
+          This donor unsubscribed from emails. Only turn emails back on if they have asked to receive them again.
+        </p>
+      )}
       <label className="flex items-center gap-2 text-sm md:col-span-6">
         <input
           type="checkbox"

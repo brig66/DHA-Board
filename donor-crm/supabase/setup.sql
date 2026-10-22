@@ -208,7 +208,9 @@ select
   e.last_emailed_at,
   c.organization,
   coalesce(a.events_attended, '') as events_attended,
-  c.is_board_member
+  c.is_board_member,
+  c.unsubscribed_at,
+  c.unsubscribe_reason
 from public.contacts c
 left join lateral (
   select
@@ -911,3 +913,27 @@ begin
       with check (bucket_id = 'email-images' and public.is_staff());
   end if;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- Email delivery, open and unsubscribe tracking
+-- ---------------------------------------------------------------------------
+alter table public.email_log add column if not exists batch_id uuid;
+alter table public.email_log add column if not exists provider_id text;
+alter table public.email_log add column if not exists delivery_status text;
+alter table public.email_log add column if not exists delivery_detail text;
+alter table public.email_log add column if not exists delivered_at timestamptz;
+alter table public.email_log add column if not exists first_opened_at timestamptz;
+alter table public.email_log add column if not exists last_opened_at timestamptz;
+alter table public.email_log add column if not exists open_count int not null default 0;
+alter table public.email_log add column if not exists unsubscribed_at timestamptz;
+create index if not exists email_log_provider_idx on public.email_log (provider_id);
+create index if not exists email_log_sent_idx on public.email_log (sent_at desc);
+
+alter table public.contacts add column if not exists unsubscribed_at timestamptz;
+alter table public.contacts add column if not exists unsubscribe_reason text;
+alter table public.contacts add column if not exists unsubscribe_reviewed_at timestamptz;
+
+-- secret that SMTP2GO includes when it reports deliveries and bounces
+insert into private.secrets (name, value)
+values ('email_webhook_secret', encode(extensions.gen_random_bytes(24), 'hex'))
+on conflict (name) do nothing;

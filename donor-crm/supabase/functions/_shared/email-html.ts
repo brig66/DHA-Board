@@ -94,10 +94,24 @@ export function styleForEmail(html: string): string {
     });
 }
 
+export type EmailExtras = {
+  /** Page where the donor confirms they want no more emails. */
+  unsubscribeUrl?: string;
+  /** Invisible picture that tells the CRM the email was opened. */
+  openPixelUrl?: string;
+};
+
 /** The full email: centered 600px card on a light background, with the footer. */
-export function buildEmailHtml(contentHtml: string, footer: string): string {
-  const footerHtml = footer
-    ? `<tr><td style="padding:16px 24px 0;font-family:${FONT};font-size:12px;line-height:1.5;color:#77736a;text-align:center">${escapeHtml(footer).replace(/\n/g, "<br>")}</td></tr>`
+export function buildEmailHtml(contentHtml: string, footer: string, extras: EmailExtras = {}): string {
+  const unsub = extras.unsubscribeUrl
+    ? `Don&rsquo;t want to receive these emails? <a href="${escapeHtml(extras.unsubscribeUrl)}" style="color:#77736a;text-decoration:underline">Unsubscribe</a>`
+    : "";
+  const footerText = [footer ? escapeHtml(footer).replace(/\n/g, "<br>") : "", unsub].filter(Boolean).join("<br><br>");
+  const footerHtml = footerText
+    ? `<tr><td style="padding:16px 24px 0;font-family:${FONT};font-size:12px;line-height:1.5;color:#77736a;text-align:center">${footerText}</td></tr>`
+    : "";
+  const pixel = extras.openPixelUrl
+    ? `<img src="${escapeHtml(extras.openPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0">`
     : "";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"><title></title></head>
 <body style="margin:0;padding:0;background:#f2f1ec">
@@ -105,7 +119,7 @@ export function buildEmailHtml(contentHtml: string, footer: string): string {
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px">
 <tr><td style="background:#ffffff;padding:24px;font-family:${FONT};font-size:16px;line-height:1.5;color:#22201b;border-radius:6px">${styleForEmail(cleanHtml(contentHtml))}</td></tr>
 ${footerHtml}
-</table></td></tr></table></body></html>`;
+</table>${pixel}</td></tr></table></body></html>`;
 }
 
 const decode = (s: string) =>

@@ -41,6 +41,8 @@ export type ContactSummary = Contact & {
   gift_years: number[];
   last_emailed_at: string | null;
   events_attended: string;
+  unsubscribed_at: string | null;
+  unsubscribe_reason: string | null;
 };
 
 export type Donation = {
@@ -81,6 +83,15 @@ export type EmailLog = {
   body: string;
   body_html: string | null;
   template_name: string | null;
+  batch_id: string | null;
+  provider_id: string | null;
+  delivery_status: "sent" | "delivered" | "bounced" | "rejected" | "spam" | null;
+  delivery_detail: string | null;
+  delivered_at: string | null;
+  first_opened_at: string | null;
+  last_opened_at: string | null;
+  open_count: number;
+  unsubscribed_at: string | null;
   sent_by_name: string | null;
   status: "sent" | "failed";
   error: string | null;

@@ -108,7 +108,7 @@ function Composer() {
   const unsavedPictures = /<img[^>]+src="(data|blob):/i.test(html);
   const ready = !!subject.trim() && hasContent(html) && !unsavedPictures;
 
-  async function callSend(contactIds: string[], testTo: string | null) {
+  async function callSend(contactIds: string[], testTo: string | null, batchId: string | null = null) {
     const supabase = createClient();
     const { data, error } = await supabase.functions.invoke("send-email", {
       body: {
@@ -118,6 +118,7 @@ function Composer() {
         body_html: html,
         template_name: templates.find((t) => t.id === templateId)?.name ?? null,
         test_to: testTo,
+        batch_id: batchId,
       },
     });
     if (error) {
@@ -155,9 +156,10 @@ function Composer() {
     try {
       const totals: SendResult = { sent: 0, failed: 0, skipped: 0, results: [] };
       const list = sendable.map((c) => c.id);
+      const batchId = crypto.randomUUID(); // ties this mailing together on the Sent Emails tab
       // send in batches so a large list doesn't time out
       for (let i = 0; i < list.length; i += 40) {
-        const r = await callSend(list.slice(i, i + 40), null);
+        const r = await callSend(list.slice(i, i + 40), null, batchId);
         totals.sent += r.sent;
         totals.failed += r.failed;
         totals.skipped += r.skipped;
@@ -333,7 +335,7 @@ function Composer() {
               <hr className="my-3 border-[var(--border)]" />
               <EmailPreview
                 className="-mx-4 -mb-4 block w-[calc(100%+2rem)] rounded-b-lg border-0"
-                html={buildEmailHtml(fillMergeFields(html, preview, true), settings?.email_footer ?? "")}
+                html={buildEmailHtml(fillMergeFields(html, preview, true), settings?.email_footer ?? "", { unsubscribeUrl: "#" })}
               />
             </div>
           ) : (
