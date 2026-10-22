@@ -149,3 +149,12 @@ uploading a spreadsheet.
    ```
 
 4. Sign in to the CRM and upload the Giving Day files on the **Import** page.
+
+### Delivery reports (SMTP2GO webhook)
+
+The Sent Emails tab shows Delivered / Bounced / Marked as spam using
+SMTP2GO's webhook. It is registered on the SMTP2GO account (webhook id 1418,
+JSON output, events: delivered, bounce, spam, reject, unsubscribe) and points
+to the `email-events` Supabase function. The URL carries a secret stored in
+`private.secrets` as `email_webhook_secret`. The API key used by the CRM needs
+the Webhooks permission in SMTP2GO to manage it.
