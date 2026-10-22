@@ -5,7 +5,15 @@ import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Profile } from "@/lib/types";
 
-export default function TopNav({ profile, openDuplicates }: { profile: Profile; openDuplicates: number }) {
+export default function TopNav({
+  profile,
+  openDuplicates,
+  unsubscribedToReview = 0,
+}: {
+  profile: Profile;
+  openDuplicates: number;
+  unsubscribedToReview?: number;
+}) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -21,6 +29,7 @@ export default function TopNav({ profile, openDuplicates }: { profile: Profile; 
     { href: "/donors", label: "Donors" },
     { href: "/board", label: "Board" },
     { href: "/email", label: "Email" },
+    { href: "/sent-emails", label: "Sent Emails", badge: unsubscribedToReview },
     { href: "/import", label: "Import" },
     { href: "/duplicates", label: "Possible Duplicates", badge: openDuplicates },
     ...(profile.role === "admin" ? [{ href: "/settings", label: "Settings" }] : []),

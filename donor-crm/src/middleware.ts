@@ -2,6 +2,8 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/signup"];
+// pages anyone can open, signed in or not (donors clicking "Unsubscribe")
+const OPEN_PATHS = ["/unsubscribe"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -30,6 +32,7 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
+  if (OPEN_PATHS.some((p) => path.startsWith(p))) return response;
   const isPublic = PUBLIC_PATHS.some((p) => path.startsWith(p));
 
   if (!user && !isPublic) {

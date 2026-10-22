@@ -17,6 +17,7 @@ type Body = {
   body: string;
   body_html?: string | null; // formatted message from the editor
   template_name?: string | null;
+  batch_id?: string | null; // one id for every donor in the same mailing
   test_to?: string | null; // send one preview to this address instead of donors
 };
 
@@ -62,6 +63,10 @@ Deno.serve(async (req) => {
   const senderEmail = settings?.sender_email || "info@dentalhealtharlington.org";
   const replyTo = settings?.reply_to || profile.email;
   const footer = settings?.email_footer || "";
+  // links in the email point back to the CRM site that sent it
+  const site = (req.headers.get("origin") || settings?.site_url || "").replace(/\/$/, "");
+  const fnBase = `${url}/functions/v1/email-events`;
+  const batchId = payload.batch_id && /^[0-9a-f-]{36}$/i.test(payload.batch_id) ? payload.batch_id : crypto.randomUUID();
 
   const { data: contacts, error } = await admin.from("contact_summary").select("*").in("id", ids);
   if (error) return json({ error: error.message }, 500);
@@ -86,6 +91,20 @@ Deno.serve(async (req) => {
     const subj = (isTest ? "[TEST] " : "") + fillMerge(subject, c);
     const content = fillMerge(bodyHtml, c, true);
     const text = htmlToText(content);
+    // each email gets its own record number, used for its open and unsubscribe links
+    const logId = crypto.randomUUID();
+    const unsubscribeUrl = site ? `${site}/unsubscribe?id=${isTest ? "test" : logId}` : "";
+    const oneClickUrl = `${fnBase}?a=unsub&id=${logId}`;
+    const headers = [
+      ...(replyTo ? [{ header: "Reply-To", value: replyTo }] : []),
+      ...(isTest
+        ? []
+        : [
+            { header: "List-Unsubscribe", value: `<${oneClickUrl}>` },
+            { header: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+          ]),
+    ];
+    let providerId: string | null = null;
 
     let status = "sent";
     let errMsg: string | undefined;
@@ -98,12 +117,18 @@ Deno.serve(async (req) => {
           sender: `${senderName} <${senderEmail}>`,
           to: [isTest ? to : `${name} <${to}>`],
           subject: subj,
-          text_body: footer ? `${text}\n\n--\n${footer}` : text,
-          html_body: buildEmailHtml(content, footer),
-          custom_headers: replyTo ? [{ header: "Reply-To", value: replyTo }] : [],
+          text_body: [text, [footer, unsubscribeUrl ? `Unsubscribe: ${unsubscribeUrl}` : ""].filter(Boolean).join("\n")]
+            .filter(Boolean)
+            .join("\n\n--\n"),
+          html_body: buildEmailHtml(content, footer, {
+            unsubscribeUrl,
+            openPixelUrl: isTest ? undefined : `${fnBase}?a=open&id=${logId}`,
+          }),
+          custom_headers: headers,
         }),
       });
       const out = await res.json().catch(() => ({}));
+      providerId = out?.data?.email_id ?? null;
       if (!res.ok || !out?.data?.succeeded) {
         status = "failed";
         errMsg =
@@ -119,6 +144,10 @@ Deno.serve(async (req) => {
 
     if (!isTest) {
       await admin.from("email_log").insert({
+        id: logId,
+        batch_id: batchId,
+        provider_id: providerId,
+        delivery_status: status === "sent" ? "sent" : null,
         contact_id: c.id,
         to_email: to,
         subject: subj,

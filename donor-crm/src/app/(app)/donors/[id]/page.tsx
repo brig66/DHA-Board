@@ -8,6 +8,7 @@ import { setEmailRecipients } from "@/lib/data";
 import { cityLine, fullName, money, shortDate } from "@/lib/format";
 import ContactForm, { type ContactDraft } from "@/components/ContactForm";
 import EmailPreview from "@/components/EmailPreview";
+import { deliveryOf, isTracked } from "@/lib/emailStatus";
 import { buildEmailHtml } from "../../../../../supabase/functions/_shared/email-html";
 import { GIFT_TYPES, type ContactSummary, type Donation, type EmailLog, type EventAttendance, type GiftType } from "@/lib/types";
 
@@ -212,6 +213,12 @@ export default function DonorPage() {
                 <div key={e} className="muted text-xs">also {e}</div>
               ))}
               {contact.do_not_email && <div><span className="pill pill-bad mt-1">Do not email</span></div>}
+              {contact.unsubscribed_at && (
+                <div className="mt-1 text-xs text-[#b8862e]">
+                  Unsubscribed {shortDate(contact.unsubscribed_at)}
+                  {contact.unsubscribe_reason ? ` (${contact.unsubscribe_reason.toLowerCase()})` : ""}
+                </div>
+              )}
             </Item>
             <Item label="Phone">
               {contact.phone ? <a className="text-teal-700" href={`tel:${contact.phone.replace(/\D/g, "")}`}>{contact.phone}</a> : "—"}
@@ -374,7 +381,8 @@ export default function DonorPage() {
                 <th>Sent</th>
                 <th>Subject</th>
                 <th>By</th>
-                <th>Status</th>
+                <th>Delivery</th>
+                <th>Opened</th>
               </tr>
             </thead>
             <tbody>
@@ -385,13 +393,28 @@ export default function DonorPage() {
                     <td className="font-semibold text-teal-700">{m.subject}</td>
                     <td>{m.sent_by_name ?? "—"}</td>
                     <td>
-                      <span className={`pill ${m.status === "sent" ? "pill-good" : "pill-bad"}`}>{m.status}</span>
-                      {m.error && <div className="muted text-xs">{m.error}</div>}
+                      {(() => {
+                        const d = deliveryOf(m);
+                        return (
+                          <>
+                            <span className={`pill ${d.kind === "bad" ? "pill-bad" : d.kind === "delivered" ? "pill-good" : ""}`}>{d.label}</span>
+                            {d.detail && <div className="muted text-xs">{d.detail}</div>}
+                          </>
+                        );
+                      })()}
+                      {m.unsubscribed_at && <div><span className="pill pill-warn mt-1">Unsubscribed</span></div>}
+                    </td>
+                    <td className="whitespace-nowrap text-sm">
+                      {m.first_opened_at
+                        ? `${shortDate(m.first_opened_at)}${m.open_count > 1 ? ` · ${m.open_count}×` : ""}`
+                        : isTracked(m)
+                          ? <span className="muted">Not yet</span>
+                          : <span className="muted text-xs">Not tracked</span>}
                     </td>
                   </tr>
                   {openEmail === m.id && (
                     <tr>
-                      <td colSpan={4} className="whitespace-pre-wrap bg-[#faf8f3] text-sm">
+                      <td colSpan={5} className="whitespace-pre-wrap bg-[#faf8f3] text-sm">
                         To: {m.to_email}
                         {m.body_html ? (
                           <EmailPreview className="mt-2 block w-full max-w-[640px] rounded border-0" html={buildEmailHtml(m.body_html, "")} />
@@ -407,7 +430,7 @@ export default function DonorPage() {
                 </Fragment>
               ))}
               {emails.length === 0 && (
-                <tr><td colSpan={4} className="muted p-4 text-center">No emails sent from the CRM yet.</td></tr>
+                <tr><td colSpan={5} className="muted p-4 text-center">No emails sent from the CRM yet.</td></tr>
               )}
             </tbody>
           </table>

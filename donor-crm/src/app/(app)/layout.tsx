@@ -41,9 +41,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     .select("id", { count: "exact", head: true })
     .eq("status", "open");
 
+  const { count: unsubscribedToReview } = await supabase
+    .from("contacts")
+    .select("id", { count: "exact", head: true })
+    .not("unsubscribed_at", "is", null)
+    .is("unsubscribe_reviewed_at", null);
+
   return (
     <>
-      <TopNav profile={profile} openDuplicates={openDuplicates ?? 0} />
+      <TopNav profile={profile} openDuplicates={openDuplicates ?? 0} unsubscribedToReview={unsubscribedToReview ?? 0} />
       <div className="mx-auto max-w-7xl px-4 py-8">{children}</div>
     </>
   );

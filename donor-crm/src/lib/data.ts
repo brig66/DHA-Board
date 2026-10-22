@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ContactSummary, Donation } from "./types";
 
 /** Loads every row of a table/view, 1,000 at a time (Supabase's page size). */
-async function fetchAll<T>(supabase: SupabaseClient, table: string, columns = "*"): Promise<T[]> {
+export async function fetchAll<T>(supabase: SupabaseClient, table: string, columns = "*"): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += 1000) {
     const { data, error } = await supabase.from(table).select(columns).range(from, from + 999);
