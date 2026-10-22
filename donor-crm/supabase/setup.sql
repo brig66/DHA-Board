@@ -890,3 +890,24 @@ insert into public.email_templates (name, subject, body) values
   E'Dear {{first_name}},\n\nAs the year comes to a close, we want to thank you for standing with Dental Health Arlington. Since your first gift in {{first_gift_year}}, you have contributed {{total_given}} to help children and families get the dental care they need.\n\nWe could not do this work without friends like you.\n\nWith gratitude,\nThe Dental Health Arlington Team'
 )
 on conflict (name) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- Formatted emails: saved formatted copies and the picture storage area
+-- ---------------------------------------------------------------------------
+alter table public.email_templates add column if not exists body_html text;
+alter table public.email_log add column if not exists body_html text;
+
+-- Pictures used in emails. They must be publicly readable so donors' email
+-- programs can show them; only signed-in staff can add them.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('email-images', 'email-images', true, 20971520, array['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+on conflict (id) do update set public = true;
+
+do $$
+begin
+  if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'staff add email images') then
+    create policy "staff add email images" on storage.objects
+      for insert to authenticated
+      with check (bucket_id = 'email-images' and public.is_staff());
+  end if;
+end $$;

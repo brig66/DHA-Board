@@ -97,3 +97,20 @@ body {
 .table td { padding: 0.55rem 0.75rem; border-bottom: 1px solid #efece3; vertical-align: top; }
 .table tbody tr:hover { background: #faf8f3; }
 .muted { color: #5c584d; }
+
+/* Email editor: looks like the email donors receive */
+.email-editor { min-height: 320px; max-height: 70vh; overflow-y: auto; padding: 16px 20px; outline: none; font-family: Arial, Helvetica, sans-serif; font-size: 16px; line-height: 1.5; color: #22201b; }
+.email-editor p { margin: 0 0 14px; }
+.email-editor h1 { font-size: 26px; line-height: 1.25; font-weight: 700; margin: 0 0 14px; }
+.email-editor h2 { font-size: 21px; line-height: 1.3; font-weight: 700; margin: 0 0 12px; }
+.email-editor h3 { font-size: 18px; line-height: 1.3; font-weight: 700; margin: 0 0 10px; }
+.email-editor ul { list-style: disc; padding-left: 24px; margin: 0 0 14px; }
+.email-editor ol { list-style: decimal; padding-left: 24px; margin: 0 0 14px; }
+.email-editor li p { margin: 0 0 4px; }
+.email-editor a { color: #1f6f8b; text-decoration: underline; }
+.email-editor hr { border: none; border-top: 1px solid #dcd8cc; margin: 20px 0; }
+.email-editor img { display: block; margin: 0 auto 14px; max-width: 100%; height: auto; cursor: pointer; }
+.email-editor p[data-email-button] a { pointer-events: none; }
+.email-editor .ProseMirror-selectednode { outline: 3px solid #1f6f8b; outline-offset: 2px; border-radius: 4px; }
+.email-editor > *:last-child { margin-bottom: 0; }
+.email-editor img.is-linked { box-shadow: 0 0 0 2px #e6f1f4; }

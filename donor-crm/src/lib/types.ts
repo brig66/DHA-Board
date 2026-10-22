@@ -79,6 +79,7 @@ export type EmailLog = {
   to_email: string;
   subject: string;
   body: string;
+  body_html: string | null;
   template_name: string | null;
   sent_by_name: string | null;
   status: "sent" | "failed";
@@ -91,6 +92,7 @@ export type EmailTemplate = {
   name: string;
   subject: string;
   body: string;
+  body_html: string | null;
   updated_at: string;
 };
 
