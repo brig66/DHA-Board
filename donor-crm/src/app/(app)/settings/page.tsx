@@ -60,6 +60,25 @@ export default function SettingsPage() {
     setSaved(true);
   }
 
+  const [hourValue, setHourValue] = useState("");
+  const [hourSaved, setHourSaved] = useState(false);
+  useEffect(() => {
+    if (settings) setHourValue(settings.volunteer_hour_value === null ? "" : String(settings.volunteer_hour_value));
+  }, [settings?.volunteer_hour_value]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function saveHourValue(e: React.FormEvent) {
+    e.preventDefault();
+    setHourSaved(false);
+    setError(null);
+    const cleaned = hourValue.replace(/[^0-9.]/g, "");
+    const value = cleaned === "" ? null : Math.round(parseFloat(cleaned) * 100) / 100;
+    if (value !== null && isNaN(value)) return setError("Enter a dollar amount (numbers only), or leave it blank.");
+    const { error } = await createClient().from("settings").update({ volunteer_hour_value: value }).eq("id", 1);
+    if (error) return setError(error.message);
+    setHourValue(value === null ? "" : String(value));
+    setHourSaved(true);
+  }
+
   if (!me) return <p className="muted">Loading…</p>;
   if (me.role !== "admin") return <p className="muted">Only admins can change settings.</p>;
 
@@ -161,6 +180,25 @@ export default function SettingsPage() {
               <button className="btn btn-primary">Save email settings</button>
               {saved && <span className="text-sm text-teal-700">Saved.</span>}
             </div>
+          </form>
+        </section>
+      )}
+
+      {settings && (
+        <section className="card p-5">
+          <h2 className="font-display text-lg font-semibold">Volunteer time</h2>
+          <p className="muted text-sm">
+            Optional. Enter what one volunteer hour is worth to DHA, and each volunteer&rsquo;s page will show the
+            dollar value of their logged time, which is useful for grant reports. Leave it blank to show hours only.
+          </p>
+          <form onSubmit={saveHourValue} className="mt-4 flex flex-wrap items-end gap-3">
+            <div>
+              <label className="label" htmlFor="hour-value">Value of one volunteer hour ($)</label>
+              <input id="hour-value" inputMode="decimal" className="input mt-1 w-40" placeholder="Blank" value={hourValue}
+                onChange={(e) => setHourValue(e.target.value)} />
+            </div>
+            <button className="btn btn-primary">Save</button>
+            {hourSaved && <span className="text-sm text-teal-700">Saved.</span>}
           </form>
         </section>
       )}

@@ -5,12 +5,34 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { setEmailRecipients } from "@/lib/data";
-import { cityLine, fullName, money, shortDate } from "@/lib/format";
+import { cityLine, fullName, hoursText, money, shortDate } from "@/lib/format";
 import ContactForm, { type ContactDraft } from "@/components/ContactForm";
 import EmailPreview from "@/components/EmailPreview";
 import { deliveryOf, isTracked } from "@/lib/emailStatus";
 import { buildEmailHtml } from "../../../../../supabase/functions/_shared/email-html";
-import { GIFT_TYPES, type ContactSummary, type Donation, type EmailLog, type EventAttendance, type GiftType } from "@/lib/types";
+import {
+  GIFT_TYPES,
+  type ContactSummary,
+  type Donation,
+  type EmailLog,
+  type EventAttendance,
+  type GiftType,
+  type VolunteerHours,
+} from "@/lib/types";
+
+type HoursDraft = {
+  work_date: string;
+  hours: string;
+  activity: string;
+  notes: string;
+};
+
+const blankHours = (): HoursDraft => ({
+  work_date: new Date().toISOString().slice(0, 10),
+  hours: "",
+  activity: "",
+  notes: "",
+});
 
 type GiftDraft = {
   gift_date: string;
@@ -45,22 +67,41 @@ export default function DonorPage() {
   const [giftForm, setGiftForm] = useState<GiftDraft | null>(null);
   const [editGiftId, setEditGiftId] = useState<string | null>(null);
   const [openEmail, setOpenEmail] = useState<string | null>(null);
+  const [hours, setHours] = useState<VolunteerHours[]>([]);
+  const [activities, setActivities] = useState<string[]>([]);
+  const [hourValue, setHourValue] = useState<number | null>(null);
+  const [hoursForm, setHoursForm] = useState<HoursDraft | null>(null);
+  const [editHoursId, setEditHoursId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const supabase = createClient();
-    const [c, g, e, ev, at, atAll] = await Promise.all([
+    const [c, g, e, ev, at, atAll, vh, vhAll, st] = await Promise.all([
       supabase.from("contact_summary").select("*").eq("id", id).maybeSingle(),
       supabase.from("donations").select("*").eq("contact_id", id).order("gift_date", { ascending: false }),
       supabase.from("email_log").select("*").eq("contact_id", id).order("sent_at", { ascending: false }),
       supabase.from("donations").select("event_name").limit(10000),
       supabase.from("event_attendance").select("*").eq("contact_id", id).order("event_name"),
       supabase.from("event_attendance").select("event_name").limit(10000),
+      supabase
+        .from("volunteer_hours")
+        .select("*")
+        .eq("contact_id", id)
+        .order("work_date", { ascending: false })
+        .order("created_at", { ascending: false }),
+      supabase.from("volunteer_hours").select("activity").limit(10000),
+      supabase.from("settings").select("volunteer_hour_value").eq("id", 1).maybeSingle(),
     ]);
     if (c.error) setError(c.error.message);
     setContact(c.data as ContactSummary | null);
     setGifts((g.data ?? []) as Donation[]);
     setEmails((e.data ?? []) as EmailLog[]);
     setAttended((at.data ?? []) as EventAttendance[]);
+    setHours((vh.data ?? []) as VolunteerHours[]);
+    setActivities(
+      Array.from(new Set(["General volunteering", ...(vhAll.data ?? []).map((x: { activity: string }) => x.activity)])).sort()
+    );
+    const v = (st.data as { volunteer_hour_value: number | null } | null)?.volunteer_hour_value;
+    setHourValue(v === null || v === undefined ? null : Number(v));
     setEvents(
       Array.from(
         new Set([...(ev.data ?? []), ...(atAll.data ?? [])].map((x: { event_name: string }) => x.event_name))
@@ -87,7 +128,9 @@ export default function DonorPage() {
 
   async function deleteContact() {
     if (!contact) return;
-    if (!confirm(`Delete ${fullName(contact)} and all ${contact.gift_count} of their gifts? This cannot be undone.`)) return;
+    const parts = [`all ${contact.gift_count} of their gifts`];
+    if (Number(contact.volunteer_entries) > 0) parts.push(`${hoursText(contact.volunteer_hours)} of volunteer time`);
+    if (!confirm(`Delete ${fullName(contact)} and ${parts.join(" and ")}? This cannot be undone.`)) return;
     const { error } = await createClient().from("contacts").delete().eq("id", id);
     if (error) return setError(error.message);
     router.push("/donors");
@@ -156,6 +199,45 @@ export default function DonorPage() {
     load();
   }
 
+  async function saveHours(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hoursForm) return;
+    const h = parseFloat(hoursForm.hours.replace(/[^0-9.]/g, ""));
+    if (isNaN(h) || h <= 0) return setError("Enter the number of hours, for example 2 or 1.5.");
+    setError(null);
+    const row = {
+      work_date: hoursForm.work_date,
+      hours: Math.round(h * 100) / 100,
+      activity: hoursForm.activity.trim() || "General volunteering",
+      notes: hoursForm.notes.trim() || null,
+    };
+    const supabase = createClient();
+    const { error } = editHoursId
+      ? await supabase.from("volunteer_hours").update(row).eq("id", editHoursId)
+      : await supabase.from("volunteer_hours").insert({ ...row, contact_id: id, source: "Entered by staff" });
+    if (error) return setError(error.message);
+    setHoursForm(null);
+    setEditHoursId(null);
+    load();
+  }
+
+  async function deleteHours(v: VolunteerHours) {
+    if (!confirm(`Delete ${hoursText(v.hours)} of volunteer time from ${shortDate(v.work_date)}?`)) return;
+    const { error } = await createClient().from("volunteer_hours").delete().eq("id", v.id);
+    if (error) return setError(error.message);
+    load();
+  }
+
+  function startEditHours(v: VolunteerHours) {
+    setEditHoursId(v.id);
+    setHoursForm({
+      work_date: v.work_date,
+      hours: String(Number(v.hours)),
+      activity: v.activity,
+      notes: v.notes ?? "",
+    });
+  }
+
   function emailThisDonor() {
     setEmailRecipients([id]);
     router.push("/email");
@@ -173,10 +255,16 @@ export default function DonorPage() {
             {contact.organization && contact.organization !== fullName(contact) && (
               <p className="text-sm font-semibold">{contact.organization}</p>
             )}
-            {contact.is_board_member && <span className="pill pill-good mt-1">Board member</span>}
+            {(contact.is_board_member || contact.is_volunteer) && (
+              <div className="mt-1 flex flex-wrap gap-2">
+                {contact.is_board_member && <span className="pill pill-good">Board member</span>}
+                {contact.is_volunteer && <span className="pill pill-good">Volunteer</span>}
+              </div>
+            )}
             <p className="muted text-sm">
               {money(contact.total_given)} given across {contact.gift_count} gift{contact.gift_count === 1 ? "" : "s"}
               {contact.first_gift_date && <> &middot; donor since {contact.first_gift_date.slice(0, 4)}</>}
+              {Number(contact.volunteer_hours) > 0 && <> &middot; {hoursText(contact.volunteer_hours)} volunteered</>}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -349,6 +437,23 @@ export default function DonorPage() {
         </div>
       </section>
 
+      {(contact.is_volunteer || hours.length > 0) && (
+        <VolunteerSection
+          hours={hours}
+          isVolunteer={contact.is_volunteer}
+          hourValue={hourValue}
+          activities={activities}
+          form={hoursForm}
+          editing={!!editHoursId}
+          onStart={() => { setEditHoursId(null); setHoursForm(blankHours()); }}
+          onChange={setHoursForm}
+          onCancel={() => { setHoursForm(null); setEditHoursId(null); }}
+          onSave={saveHours}
+          onEdit={startEditHours}
+          onDelete={deleteHours}
+        />
+      )}
+
       <section className="card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-display text-lg font-semibold">Events attended</h2>
@@ -437,6 +542,128 @@ export default function DonorPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+function VolunteerSection({
+  hours,
+  isVolunteer,
+  hourValue,
+  activities,
+  form,
+  editing,
+  onStart,
+  onChange,
+  onCancel,
+  onSave,
+  onEdit,
+  onDelete,
+}: {
+  hours: VolunteerHours[];
+  isVolunteer: boolean;
+  hourValue: number | null;
+  activities: string[];
+  form: HoursDraft | null;
+  editing: boolean;
+  onStart: () => void;
+  onChange: (f: HoursDraft) => void;
+  onCancel: () => void;
+  onSave: (e: React.FormEvent) => void;
+  onEdit: (v: VolunteerHours) => void;
+  onDelete: (v: VolunteerHours) => void;
+}) {
+  const year = new Date().getFullYear();
+  const total = hours.reduce((n, v) => n + Number(v.hours), 0);
+  const thisYear = hours.filter((v) => v.work_date.startsWith(String(year))).reduce((n, v) => n + Number(v.hours), 0);
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div>
+          <h2 className="font-display text-lg font-semibold">Volunteer time</h2>
+          <p className="muted text-sm">
+            {hoursText(total)} in total &middot; {hoursText(thisYear)} in {year}
+            {hourValue !== null && hourValue > 0 && total > 0 && (
+              <> &middot; worth about {money(total * hourValue)} at {money(hourValue)} an hour</>
+            )}
+          </p>
+          {!isVolunteer && (
+            <p className="mt-1 text-xs text-[#b8862e]">
+              Not currently marked as a volunteer. Their logged time is kept.
+            </p>
+          )}
+        </div>
+        {!form && (
+          <button className="btn btn-secondary btn-sm" onClick={onStart}>
+            + Log volunteer time
+          </button>
+        )}
+      </div>
+
+      {form && (
+        <form onSubmit={onSave} className="grid gap-3 border-t border-[var(--border)] bg-[#faf8f3] p-4 md:grid-cols-6">
+          <div>
+            <label className="label" htmlFor="vh-date">Date</label>
+            <input id="vh-date" type="date" required className="input mt-1" value={form.work_date}
+              onChange={(e) => onChange({ ...form, work_date: e.target.value })} />
+          </div>
+          <div>
+            <label className="label" htmlFor="vh-hours">Hours</label>
+            <input id="vh-hours" required inputMode="decimal" placeholder="e.g. 2.5" className="input mt-1" value={form.hours}
+              onChange={(e) => onChange({ ...form, hours: e.target.value })} />
+          </div>
+          <div className="md:col-span-4">
+            <label className="label" htmlFor="vh-activity">Activity</label>
+            <input id="vh-activity" list="activity-list" className="input mt-1"
+              placeholder="e.g. Love That Smile setup, school screening, office help" value={form.activity}
+              onChange={(e) => onChange({ ...form, activity: e.target.value })} />
+            <datalist id="activity-list">
+              {activities.map((a) => <option key={a} value={a} />)}
+            </datalist>
+          </div>
+          <div className="md:col-span-6">
+            <label className="label" htmlFor="vh-notes">Notes</label>
+            <input id="vh-notes" className="input mt-1" value={form.notes}
+              onChange={(e) => onChange({ ...form, notes: e.target.value })} />
+          </div>
+          <div className="flex gap-2 md:col-span-6">
+            <button className="btn btn-primary">{editing ? "Save time" : "Add time"}</button>
+            <button type="button" className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th className="text-right">Hours</th>
+              <th>Activity</th>
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {hours.map((v) => (
+              <tr key={v.id}>
+                <td className="whitespace-nowrap">{shortDate(v.work_date)}</td>
+                <td className="text-right">{Number(v.hours).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
+                <td>{v.activity}</td>
+                <td className="text-xs">{v.notes}</td>
+                <td className="whitespace-nowrap text-right">
+                  <button className="text-xs font-semibold text-teal-700" onClick={() => onEdit(v)}>Edit</button>
+                  <button className="ml-3 text-xs font-semibold text-coral-600" onClick={() => onDelete(v)}>Delete</button>
+                </td>
+              </tr>
+            ))}
+            {hours.length === 0 && (
+              <tr><td colSpan={5} className="muted p-4 text-center">No volunteer time logged yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
