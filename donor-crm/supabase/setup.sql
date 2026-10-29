@@ -110,6 +110,7 @@ create index if not exists donations_date_idx on public.donations (gift_date);
 alter table public.contacts add column if not exists organization text;
 alter table public.donations add column if not exists gift_type text not null default 'Donation';
 alter table public.contacts add column if not exists is_board_member boolean not null default false;
+alter table public.contacts add column if not exists is_volunteer boolean not null default false;
 
 -- Who came to which event (from attendee lists; no dollar amount)
 create table if not exists public.event_attendance (
@@ -120,6 +121,20 @@ create table if not exists public.event_attendance (
   created_at timestamptz not null default now(),
   unique (contact_id, event_name)
 );
+
+-- Volunteer time (date, hours, activity) for people marked as volunteers
+create table if not exists public.volunteer_hours (
+  id uuid primary key default gen_random_uuid(),
+  contact_id uuid not null references public.contacts (id) on delete cascade,
+  work_date date not null,
+  hours numeric(6, 2) not null check (hours > 0),
+  activity text not null default 'General volunteering',
+  notes text,
+  source text,
+  created_at timestamptz not null default now()
+);
+create index if not exists volunteer_hours_contact_idx on public.volunteer_hours (contact_id);
+create index if not exists volunteer_hours_date_idx on public.volunteer_hours (work_date);
 
 create table if not exists public.possible_duplicates (
   id uuid primary key default gen_random_uuid(),
@@ -164,6 +179,9 @@ create table if not exists public.settings (
   email_footer text not null default 'Dental Health Arlington · Arlington, TX · Reply to this email if you would prefer not to receive future messages.'
 );
 insert into public.settings (id) values (1) on conflict (id) do nothing;
+-- Optional dollar value of one volunteer hour (blank shows hours only)
+alter table public.settings add column if not exists volunteer_hour_value numeric(8, 2)
+  check (volunteer_hour_value is null or volunteer_hour_value >= 0);
 
 -- API keys live in a schema the website can never read. Only the email
 -- sending function (running on Supabase's servers) can fetch them.
@@ -210,7 +228,11 @@ select
   coalesce(a.events_attended, '') as events_attended,
   c.is_board_member,
   c.unsubscribed_at,
-  c.unsubscribe_reason
+  c.unsubscribe_reason,
+  c.is_volunteer,
+  coalesce(v.volunteer_hours, 0) as volunteer_hours,
+  coalesce(v.volunteer_entries, 0) as volunteer_entries,
+  v.last_volunteer_date
 from public.contacts c
 left join lateral (
   select
@@ -234,7 +256,12 @@ left join lateral (
   select string_agg(x.event_name, '; ' order by x.event_name) as events_attended
   from public.event_attendance x
   where x.contact_id = c.id
-) a on true;
+) a on true
+left join lateral (
+  select sum(h.hours) as volunteer_hours, count(*) as volunteer_entries, max(h.work_date) as last_volunteer_date
+  from public.volunteer_hours h
+  where h.contact_id = c.id
+) v on true;
 
 -- ---------------------------------------------------------------------------
 -- Matching helpers used for de-duplication
@@ -788,8 +815,9 @@ begin
 end;
 $$;
 
--- Carries event attendance, business name and the board flag over to the
--- record being kept. The Duplicates screen runs this just before merge_contacts.
+-- Carries event attendance, volunteer time, business name, and the board and
+-- volunteer flags over to the record being kept. The Duplicates screen runs
+-- this just before merge_contacts.
 create or replace function public.prepare_merge(keep_id uuid, remove_id uuid)
 returns void
 language plpgsql
@@ -805,9 +833,11 @@ begin
   update public.event_attendance x set contact_id = keep_id
   where x.contact_id = remove_id
     and not exists (select 1 from public.event_attendance y where y.contact_id = keep_id and y.event_name = x.event_name);
+  update public.volunteer_hours set contact_id = keep_id where contact_id = remove_id;
   update public.contacts k set
     organization = coalesce(k.organization, d.organization),
-    is_board_member = k.is_board_member or d.is_board_member
+    is_board_member = k.is_board_member or d.is_board_member,
+    is_volunteer = k.is_volunteer or d.is_volunteer
   from public.contacts d
   where k.id = keep_id and d.id = remove_id;
 end;
@@ -824,6 +854,7 @@ alter table public.email_log enable row level security;
 alter table public.email_templates enable row level security;
 alter table public.settings enable row level security;
 alter table public.event_attendance enable row level security;
+alter table public.volunteer_hours enable row level security;
 
 drop policy if exists "profiles: read own or staff" on public.profiles;
 create policy "profiles: read own or staff" on public.profiles
@@ -839,7 +870,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['contacts', 'donations', 'possible_duplicates', 'email_templates', 'event_attendance'] loop
+  foreach t in array array['contacts', 'donations', 'possible_duplicates', 'email_templates', 'event_attendance', 'volunteer_hours'] loop
     execute format('drop policy if exists "staff full access" on public.%I', t);
     execute format(
       'create policy "staff full access" on public.%I for all to authenticated using (public.is_staff()) with check (public.is_staff())',
