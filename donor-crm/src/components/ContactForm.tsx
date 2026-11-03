@@ -7,6 +7,7 @@ export type ContactDraft = Pick<
   Contact,
   | "first_name" | "last_name" | "email" | "alt_emails" | "phone" | "alt_phones" | "address"
   | "city" | "state" | "zip" | "country" | "notes" | "do_not_email" | "organization" | "is_board_member"
+  | "is_volunteer"
 >;
 
 export const emptyDraft: ContactDraft = {
@@ -14,6 +15,7 @@ export const emptyDraft: ContactDraft = {
   address: null, city: null, state: null, zip: null, country: null, notes: null, do_not_email: false,
   organization: null,
   is_board_member: false,
+  is_volunteer: false,
 };
 
 const list = (s: string) =>
@@ -96,7 +98,7 @@ export default function ContactForm({
           checked={d.do_not_email}
           onChange={(e) => setD({ ...d, do_not_email: e.target.checked })}
         />
-        Do not email this donor (they asked to be removed)
+        Do not email this person (they asked to be removed)
       </label>
       {(initial as { unsubscribed_at?: string | null }).unsubscribed_at && !d.do_not_email && (
         <p className="-mt-2 text-sm text-[#b8862e] md:col-span-6">
@@ -110,6 +112,14 @@ export default function ContactForm({
           onChange={(e) => setD({ ...d, is_board_member: e.target.checked })}
         />
         Current board member (shows on the Board tab)
+      </label>
+      <label className="flex items-center gap-2 text-sm md:col-span-6">
+        <input
+          type="checkbox"
+          checked={d.is_volunteer}
+          onChange={(e) => setD({ ...d, is_volunteer: e.target.checked })}
+        />
+        Volunteer (log their volunteer time on their page; this does not give them access to the CRM)
       </label>
       <div className="md:col-span-6">
         <button className="btn btn-primary" disabled={saving || (!d.first_name && !d.last_name && !d.organization)}>

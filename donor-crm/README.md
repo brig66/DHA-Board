@@ -44,6 +44,13 @@ its own sign-ins, and its own database.
 - **Download for Excel.** Downloads the donor list (all donors, a filtered
   list, or only the ones you've ticked) as a spreadsheet.
 - **Add, edit, or delete** donors and gifts, and mark anyone **Do not email**.
+- **Volunteers.** Tick **Volunteer** on anyone's record (or click **+ Add
+  volunteer** on the Donors page) to log the time they give: date, hours,
+  activity, and notes. Their page shows total hours and hours this year, and
+  the Donors page can show only volunteers and download their time log for
+  Excel. Volunteers are tracked like donors; they get no access to the CRM.
+  An admin can set what one volunteer hour is worth under **Settings →
+  Volunteer time** to show a dollar value for grant reports.
 
 ## Who can see it
 
@@ -127,6 +134,10 @@ Email sending**.
   details**, and tick **Do not email**. They'll be skipped from then on.
 - **One-off gifts by check or cash:** open the donor (or click **+ Add
   donor**), then click **+ Record a gift**.
+- **Volunteer time:** open the volunteer (or click **+ Add volunteer**), then
+  click **+ Log volunteer time**. For a grant report, set **Show** to
+  **Volunteers** on the Donors page and click **Download shown volunteers'
+  time log**.
 
 ## Coming in phase 2
 
@@ -149,3 +160,10 @@ uploading a spreadsheet.
    ```
 
 4. Sign in to the CRM and upload the Giving Day files on the **Import** page.
+
+## Database changes added later
+
+- **Volunteers (October 2026):** `donor-crm/supabase/add-volunteers.sql` adds the
+  Volunteer checkbox and the volunteer time log to the existing database. It
+  is safe to run more than once. A fresh database built from `setup.sql`
+  already includes it.

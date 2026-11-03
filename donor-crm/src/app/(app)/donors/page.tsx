@@ -4,9 +4,9 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { fetchAllContacts, setEmailRecipients } from "@/lib/data";
-import { cityLine, downloadCsv, fullName, money, shortDate } from "@/lib/format";
-import type { ContactSummary } from "@/lib/types";
+import { fetchAll, fetchAllContacts, setEmailRecipients } from "@/lib/data";
+import { cityLine, downloadCsv, fullName, hoursText, money, shortDate } from "@/lib/format";
+import type { ContactSummary, VolunteerHours } from "@/lib/types";
 
 type SortKey = "name" | "email" | "address" | "phone" | "total" | "last_gift";
 
@@ -30,7 +30,9 @@ function DonorList() {
   const [year, setYear] = useState("");
   const [notSince, setNotSince] = useState("");
   const [emailOnly, setEmailOnly] = useState(false);
-  const [kind, setKind] = useState<"" | "donors" | "attendees">("");
+  const [kind, setKind] = useState<"" | "donors" | "attendees" | "volunteers">(
+    params.get("show") === "volunteers" ? "volunteers" : ""
+  );
   const [sort, setSort] = useState<SortKey>("name");
   const [asc, setAsc] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -90,6 +92,7 @@ function DonorList() {
         return false;
       if (kind === "donors" && c.gift_count === 0) return false;
       if (kind === "attendees" && c.gift_count > 0) return false;
+      if (kind === "volunteers" && !c.is_volunteer && !(Number(c.volunteer_entries) > 0)) return false;
       if (year && !c.gift_years.includes(Number(year))) return false;
       if (notSince && c.gift_years.some((y) => y >= Number(notSince))) return false;
       if (emailOnly && (!c.email || c.do_not_email || c.is_anonymous)) return false;
@@ -156,18 +159,53 @@ function DonorList() {
       [
         "First Name", "Last Name", "Organization", "Email", "Other Emails", "Phone", "Other Phones", "Address", "City",
         "State", "Zip", "Total Given", "Number of Gifts", "First Gift", "Last Gift", "Last Gift Amount",
-        "Last Gift Event", "All Events", "Years Given", "Events Attended", "Do Not Email", "Notes",
+        "Last Gift Event", "All Events", "Years Given", "Events Attended", "Volunteer", "Volunteer Hours",
+        "Last Volunteered", "Do Not Email", "Notes",
       ],
       rows.map((c) => [
         c.first_name, c.last_name, c.organization, c.email, c.alt_emails.join("; "), c.phone, c.alt_phones.join("; "),
         c.address, c.city, c.state, c.zip, Number(c.total_given).toFixed(2), c.gift_count, c.first_gift_date,
         c.last_gift_date, c.last_gift_amount === null ? "" : Number(c.last_gift_amount).toFixed(2),
         c.last_gift_event, c.events, [...c.gift_years].sort().join(", "), c.events_attended,
+        c.is_volunteer ? "Yes" : "",
+        Number(c.volunteer_hours) > 0 ? Number(c.volunteer_hours) : "",
+        c.last_volunteer_date,
         c.do_not_email ? "Yes" : "",
         c.notes,
       ])
     );
   }
+
+  const [exportingTime, setExportingTime] = useState(false);
+  /** Every logged volunteer shift for the volunteers shown (or ticked), one row each. */
+  async function exportVolunteerTime() {
+    const people = selected.size ? shown.filter((c) => selected.has(c.id)) : shown;
+    const byId = new Map(people.map((c) => [c.id, c]));
+    setExportingTime(true);
+    try {
+      const entries = await fetchAll<VolunteerHours>(createClient(), "volunteer_hours", "contact_id, work_date, hours, activity, notes");
+      const rows = entries
+        .filter((v) => byId.has(v.contact_id))
+        .sort((a, b) => a.work_date.localeCompare(b.work_date));
+      downloadCsv(
+        `DHA volunteer time ${new Date().toISOString().slice(0, 10)}.csv`,
+        ["Date", "First Name", "Last Name", "Organization", "Hours", "Activity", "Notes"],
+        rows.map((v) => {
+          const c = byId.get(v.contact_id)!;
+          return [v.work_date, c.first_name, c.last_name, c.organization, Number(v.hours), v.activity, v.notes];
+        })
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setExportingTime(false);
+    }
+  }
+
+  const volunteerTotals = useMemo(() => {
+    const people = shown.filter((c) => Number(c.volunteer_entries) > 0);
+    return { people: people.length, hours: people.reduce((n, c) => n + Number(c.volunteer_hours), 0) };
+  }, [shown]);
 
   const Th = ({ k, children, right }: { k: SortKey; children: React.ReactNode; right?: boolean }) => (
     <th className={right ? "text-right" : ""}>
@@ -190,9 +228,14 @@ function DonorList() {
             {shown.length} of {contacts.length} contacts shown. Click a column heading to sort.
           </p>
         </div>
-        <Link href="/donors/new" className="btn btn-primary">
-          + Add donor
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/donors/new?volunteer=1" className="btn btn-secondary">
+            + Add volunteer
+          </Link>
+          <Link href="/donors/new" className="btn btn-primary">
+            + Add donor
+          </Link>
+        </div>
       </div>
 
       <div className="card grid gap-3 p-4 md:grid-cols-7">
@@ -239,7 +282,8 @@ function DonorList() {
           <select className="input mt-1" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
             <option value="">Everyone</option>
             <option value="donors">Donors (gave at least once)</option>
-            <option value="attendees">Attended only, no gifts yet</option>
+            <option value="attendees">No gifts yet</option>
+            <option value="volunteers">Volunteers</option>
           </select>
         </div>
         <label className="flex items-end gap-2 pb-2 text-sm">
@@ -255,12 +299,24 @@ function DonorList() {
         <button className="btn btn-secondary" onClick={exportShown}>
           Download {selected.size ? "selected" : "shown"} for Excel
         </button>
+        {kind === "volunteers" && (
+          <button className="btn btn-secondary" disabled={exportingTime} onClick={exportVolunteerTime}>
+            {exportingTime ? "Preparing…" : `Download ${selected.size ? "selected" : "shown"} volunteers' time log`}
+          </button>
+        )}
         {selected.size > 0 && (
           <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>
             Clear selection
           </button>
         )}
       </div>
+
+      {kind === "volunteers" && (
+        <p className="-mt-2 text-sm">
+          <strong>{hoursText(volunteerTotals.hours)}</strong> of volunteer time logged by the {volunteerTotals.people}{" "}
+          {volunteerTotals.people === 1 ? "person" : "people"} shown who have time recorded.
+        </p>
+      )}
 
       <div className="card overflow-x-auto">
         <table className="table">
@@ -289,7 +345,11 @@ function DonorList() {
                   <Link href={`/donors/${c.id}`} className="font-semibold text-teal-700">
                     {c.last_name || c.first_name ? `${c.last_name}${c.last_name && c.first_name ? ", " : ""}${c.first_name}` : "(no name)"}
                   </Link>
+                  {c.is_volunteer && <span className="pill pill-good ml-2">Volunteer</span>}
                   {c.do_not_email && <span className="pill pill-bad ml-2">Do not email</span>}
+                  {Number(c.volunteer_hours) > 0 && (
+                    <div className="muted text-xs">{hoursText(c.volunteer_hours)} volunteered</div>
+                  )}
                   {c.organization && c.organization !== c.last_name && (
                     <div className="muted text-xs">{c.organization}</div>
                   )}

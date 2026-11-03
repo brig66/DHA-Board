@@ -25,6 +25,7 @@ export type Contact = {
   is_anonymous: boolean;
   organization: string | null;
   is_board_member: boolean;
+  is_volunteer: boolean;
   info_date: string | null;
   created_at: string;
   updated_at: string;
@@ -43,6 +44,20 @@ export type ContactSummary = Contact & {
   events_attended: string;
   unsubscribed_at: string | null;
   unsubscribe_reason: string | null;
+  volunteer_hours: number;
+  volunteer_entries: number;
+  last_volunteer_date: string | null;
+};
+
+export type VolunteerHours = {
+  id: string;
+  contact_id: string;
+  work_date: string;
+  hours: number;
+  activity: string;
+  notes: string | null;
+  source: string | null;
+  created_at: string;
 };
 
 export type Donation = {
@@ -113,4 +128,6 @@ export type Settings = {
   sender_email: string;
   reply_to: string | null;
   email_footer: string;
+  /** Dollar value of one volunteer hour, set by an admin. Blank shows no dollar values. */
+  volunteer_hour_value: number | null;
 };

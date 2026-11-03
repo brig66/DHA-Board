@@ -12,6 +12,12 @@ export const shortDate = (d: string | null | undefined) =>
       })
     : "—";
 
+/** 1 → "1 hour", 2.5 → "2.5 hours" */
+export const hoursText = (n: number | string | null | undefined) => {
+  const v = Number(n ?? 0);
+  return `${v.toLocaleString("en-US", { maximumFractionDigits: 2 })} hour${v === 1 ? "" : "s"}`;
+};
+
 export const fullName = (c: { first_name: string; last_name: string }) =>
   [c.first_name, c.last_name].filter(Boolean).join(" ") || "(no name)";
 
