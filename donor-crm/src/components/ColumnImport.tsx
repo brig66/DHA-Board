@@ -36,6 +36,7 @@ const SUMMARY_LINES: Record<ImportKind, { key: string; text: string }[]> = {
     { key: "new_people", text: "new people added" },
     { key: "matched_people", text: "matched to people already in the CRM" },
     { key: "boxes_ticked", text: "boxes ticked (board member, volunteer, do not email, call or mail)" },
+    { key: "kept_resubscribed", text: "opt-outs not applied because the person has since asked to hear from DHA again (see their Contact preferences)" },
   ],
   auction: [
     { key: "items_added", text: "items added" },

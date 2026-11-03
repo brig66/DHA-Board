@@ -20,7 +20,7 @@ type Gift = {
   thanked_method: string | null;
   thanked_by_name: string | null;
 };
-type ItemLite = { donation_id: string | null; event_name: string; sold_amount: number | null };
+type ItemLite = { donation_id: string | null; event_name: string; sold_amount: number | null; fair_market_value: number | null };
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -38,7 +38,7 @@ export default function DashboardPage() {
         fetchAllContacts(supabase),
         fetchAll<Gift>(supabase, "donations", "id, contact_id, gift_date, amount, event_name, gift_type, thanked_on, thanked_method, thanked_by_name"),
         fetchAll<EmailLite>(supabase, "email_log", "contact_id, sent_at, subject, template_name, status"),
-        fetchAll<ItemLite>(supabase, "inkind_items", "donation_id, event_name, sold_amount"),
+        fetchAll<ItemLite>(supabase, "inkind_items", "donation_id, event_name, sold_amount, fair_market_value"),
       ]);
       setContacts(c);
       setGifts(g);
@@ -60,11 +60,17 @@ export default function DashboardPage() {
     const named = contacts.filter((c) => !c.is_anonymous);
 
     // An auction item counts once in "Total raised": at what it sold for once
-    // it sells (the buyer's payment), or at its market value until then.
+    // it sells (the buyer's payment), or at its market value until then. Its
+    // donor's in-kind gift carries the market value; an item with no donor
+    // recorded yet is counted here directly.
     const soldGiftIds = new Set(items.filter((i) => i.sold_amount !== null && i.donation_id).map((i) => i.donation_id!));
     const counted = gifts.filter((g) => !soldGiftIds.has(g.id));
     const auctionSales = items.reduce((s, i) => s + Number(i.sold_amount ?? 0), 0);
-    const total = counted.reduce((s, g) => s + Number(g.amount), 0) + auctionSales;
+    const unsoldNoGift = items.filter((i) => i.sold_amount === null && !i.donation_id);
+    const total =
+      counted.reduce((s, g) => s + Number(g.amount), 0) +
+      auctionSales +
+      unsoldNoGift.reduce((s, i) => s + Number(i.fair_market_value ?? 0), 0);
 
     const byEvent = new Map<string, { donors: Set<string>; gifts: number; total: number; auction: number; latest: string }>();
     const ev = (name: string) => {
@@ -80,7 +86,10 @@ export default function DashboardPage() {
       if (g.gift_date > e.latest) e.latest = g.gift_date;
     }
     for (const i of items) {
-      if (i.sold_amount === null) continue;
+      if (i.sold_amount === null) {
+        if (!i.donation_id && Number(i.fair_market_value ?? 0) > 0) ev(i.event_name).total += Number(i.fair_market_value);
+        continue;
+      }
       const e = ev(i.event_name);
       e.auction += Number(i.sold_amount);
       e.total += Number(i.sold_amount);

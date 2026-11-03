@@ -1,5 +1,7 @@
 // Has a gift been thanked? Either someone ticked it off (letter, call, card…)
 // or a thank-you email went out from the CRM on or after the gift date.
+// In-kind gifts count only when ticked off or when their acknowledgment
+// letter is emailed, since the donor needs that letter for their taxes.
 
 export type EmailLite = {
   contact_id: string | null;
@@ -16,6 +18,7 @@ export type GiftLite = {
   thanked_on: string | null;
   thanked_method: string | null;
   thanked_by_name?: string | null;
+  gift_type?: string;
 };
 
 export type ThankStatus =
@@ -46,6 +49,7 @@ export function thankYouEmailsByContact(emails: EmailLite[]): Map<string, EmailL
 
 export function thankStatus(g: GiftLite, emailsByContact: Map<string, EmailLite[]>): ThankStatus {
   if (g.thanked_on) return { kind: "thanked", on: g.thanked_on, method: g.thanked_method ?? "Thanked", by: g.thanked_by_name ?? null };
+  if (g.gift_type === "In-kind") return { kind: "needed" };
   const m = (emailsByContact.get(g.contact_id) ?? []).find((e) => e.sent_at.slice(0, 10) >= g.gift_date);
   if (m) return { kind: "emailed", on: m.sent_at, subject: m.subject };
   return { kind: "needed" };

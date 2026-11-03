@@ -94,6 +94,7 @@ function InKind() {
   const [thank, setThank] = useState<{ method: string; on: string } | null>(null);
   const formRef = useRef<HTMLDivElement>(null);
   const opened = useRef(false);
+  const defaulted = useRef(false);
 
   const load = useCallback(async () => {
     const supabase = createClient();
@@ -135,9 +136,12 @@ function InKind() {
     return Array.from(latest.entries()).sort((a, b) => b[1].localeCompare(a[1])).map(([e]) => e);
   }, [items]);
 
+  // start on the most recent event, once; "All events" stays chosen after that
   useEffect(() => {
-    if (!loading && !event && events.length && !params.get("item")) setEvent(events[0]);
-  }, [loading, events, event, params]);
+    if (loading || defaulted.current) return;
+    defaulted.current = true;
+    if (events.length && !params.get("item")) setEvent(events[0]);
+  }, [loading, events, params]);
 
   // a link from a donor's page opens that item
   useEffect(() => {

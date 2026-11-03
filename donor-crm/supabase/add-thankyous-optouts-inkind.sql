@@ -36,6 +36,8 @@ create table if not exists public.contact_preference_log (
   created_at timestamptz not null default now()
 );
 create index if not exists contact_preference_log_contact_idx on public.contact_preference_log (contact_id, created_at desc);
+-- the actual moment, so several changes in one import keep their order
+alter table public.contact_preference_log alter column created_at set default clock_timestamp();
 
 create table if not exists public.outreach_notes (
   id uuid primary key default gen_random_uuid(),
@@ -570,7 +572,13 @@ stable
 security definer
 set search_path = public
 as $$
-  select jsonb_build_object('id', l.id, 'kind', l.kind, 'snapshot', l.snapshot)
+  -- a donor's acknowledgment states no values, so none are handed out with it
+  select jsonb_build_object('id', l.id, 'kind', l.kind, 'snapshot',
+    case when l.kind = 'inkind_ack' then
+      jsonb_set(l.snapshot, '{items}', coalesce(
+        (select jsonb_agg(i - 'fair_market_value' - 'sold_amount' - 'deductible')
+         from jsonb_array_elements(l.snapshot -> 'items') i), '[]'::jsonb))
+    else l.snapshot end)
   from public.acknowledgment_letters l
   where l.id = p_letter;
 $$;
@@ -578,6 +586,33 @@ $$;
 -- ---------------------------------------------------------------------------
 -- Imports
 -- ---------------------------------------------------------------------------
+-- Finds or adds the person on an imported row. A row with an email and no
+-- name (common on opt-out lists) belongs to whoever has that email.
+create or replace function public.import_contact(r jsonb, out contact_id uuid, out created boolean)
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_email text := nullif(lower(trim(coalesce(r ->> 'email', ''))), '');
+begin
+  created := false;
+  if coalesce(trim(r ->> 'first_name'), '') = '' and coalesce(trim(r ->> 'last_name'), '') = '' and v_email is not null then
+    select c.id into contact_id from public.contacts c
+    where not c.is_anonymous and lower(c.email) = v_email
+    order by c.created_at limit 1;
+    if contact_id is null then
+      select c.id into contact_id from public.contacts c
+      where not c.is_anonymous and public.contact_has_email(c, v_email)
+      order by c.created_at limit 1;
+    end if;
+    if contact_id is not null then
+      return;
+    end if;
+  end if;
+  select f.contact_id, f.created into contact_id, created from public.contact_for_row(r, null) f;
+end;
+$$;
+
 -- Volunteers: rows with a date and hours add time; rows without are a roster
 create or replace function public.import_volunteers(rows jsonb, source_label text default 'Volunteer list')
 returns jsonb
@@ -602,7 +637,7 @@ begin
   select count(*) into before_flags from public.possible_duplicates;
 
   for r in select value from jsonb_array_elements(rows) loop
-    select f.contact_id, f.created into v_contact, v_created from public.contact_for_row(r, null) f;
+    select f.contact_id, f.created into v_contact, v_created from public.import_contact(r) f;
     if v_created then new_people := new_people + 1; else matched := matched + 1; end if;
 
     select is_volunteer into v_was from public.contacts where id = v_contact;
@@ -615,7 +650,15 @@ begin
     v_hours := nullif(r ->> 'hours', '')::numeric;
     if v_date is not null and v_hours is not null and v_hours > 0 then
       v_activity := coalesce(nullif(trim(coalesce(r ->> 'activity', '')), ''), 'General volunteering');
-      v_key := md5(v_contact::text || '|' || v_date::text || '|' || lower(v_activity) || '|' || round(v_hours, 2)::text);
+      -- keyed on who the row names (not the CRM record, which a merge can
+      -- change), so re-importing a file never logs the same shift twice;
+      -- dup_index keeps two identical shifts in one file apart
+      v_key := md5(
+        coalesce(nullif(lower(trim(coalesce(r ->> 'email', ''))), ''),
+                 lower(trim(coalesce(r ->> 'first_name', '')) || ' ' || trim(coalesce(r ->> 'last_name', ''))) || '|' ||
+                 coalesce(public.phone_digits(r ->> 'phone'), ''))
+        || '|' || v_date::text || '|' || lower(v_activity) || '|' || round(v_hours, 2)::text
+        || coalesce('|' || nullif(r ->> 'dup_index', ''), ''));
       insert into public.volunteer_hours (contact_id, work_date, hours, activity, notes, source, import_key)
       values (v_contact, v_date, round(v_hours, 2), v_activity, nullif(trim(coalesce(r ->> 'notes', '')), ''),
               source_label, v_key)
@@ -642,10 +685,14 @@ declare
   v_contact uuid;
   v_created boolean;
   v_note text;
-  new_people int := 0; matched int := 0; flags_set int := 0; flagged int := 0;
+  v_email text;
+  v_target uuid;
+  v_targets uuid[];
+  new_people int := 0; matched int := 0; flags_set int := 0; kept int := 0; flagged int := 0;
   before_flags int;
   ch text;
   v_flag boolean;
+  v_last_action text;
 begin
   if auth.uid() is not null and not public.is_staff() then
     raise exception 'Not authorized';
@@ -653,8 +700,9 @@ begin
   select count(*) into before_flags from public.possible_duplicates;
 
   for r in select value from jsonb_array_elements(rows) loop
-    select f.contact_id, f.created into v_contact, v_created from public.contact_for_row(r, null) f;
+    select f.contact_id, f.created into v_contact, v_created from public.import_contact(r) f;
     if v_created then new_people := new_people + 1; else matched := matched + 1; end if;
+    v_email := nullif(lower(trim(coalesce(r ->> 'email', ''))), '');
 
     if coalesce((r ->> 'is_board_member')::boolean, false) then
       update public.contacts set is_board_member = true, updated_at = now() where id = v_contact and not is_board_member;
@@ -666,12 +714,31 @@ begin
     end if;
     foreach ch in array array['email', 'call', 'mail'] loop
       if coalesce((r ->> ('do_not_' || ch))::boolean, false) then
-        select case ch when 'email' then do_not_email when 'call' then do_not_call else do_not_mail end
-          into v_flag from public.contacts where id = v_contact;
-        if not v_flag then
-          perform public.set_contact_preference(v_contact, ch, true, 'Imported list', source_label);
-          flags_set := flags_set + 1;
+        -- an email opt-out covers everyone who uses that address
+        v_targets := array[v_contact];
+        if ch = 'email' and v_email is not null then
+          v_targets := v_targets || array(
+            select c.id from public.contacts c
+            where lower(c.email) = v_email and c.id <> v_contact and not c.is_anonymous);
         end if;
+        foreach v_target in array v_targets loop
+          select case ch when 'email' then do_not_email when 'call' then do_not_call else do_not_mail end
+            into v_flag from public.contacts where id = v_target;
+          if v_flag then
+            continue;
+          end if;
+          -- someone who opted back in (with a note saying so) isn't opted out
+          -- again by an older list
+          select l.action into v_last_action from public.contact_preference_log l
+          where l.contact_id = v_target and l.channel = ch
+          order by l.created_at desc limit 1;
+          if v_last_action = 'opt_in' then
+            kept := kept + 1;
+            continue;
+          end if;
+          perform public.set_contact_preference(v_target, ch, true, 'Imported list', source_label);
+          flags_set := flags_set + 1;
+        end loop;
       end if;
     end loop;
 
@@ -686,7 +753,7 @@ begin
   select count(*) - before_flags into flagged from public.possible_duplicates;
   return jsonb_build_object(
     'new_people', new_people, 'matched_people', matched, 'boxes_ticked', flags_set,
-    'possible_duplicates_flagged', flagged);
+    'kept_resubscribed', kept, 'possible_duplicates_flagged', flagged);
 end;
 $$;
 
@@ -728,12 +795,12 @@ begin
 
     v_donor := null;
     if r -> 'donor' is not null and jsonb_typeof(r -> 'donor') = 'object' then
-      select f.contact_id, f.created into v_donor, v_created from public.contact_for_row(r -> 'donor', null) f;
+      select f.contact_id, f.created into v_donor, v_created from public.import_contact(r -> 'donor') f;
       if v_created then new_people := new_people + 1; else matched := matched + 1; end if;
     end if;
     v_buyer := null;
     if r -> 'buyer' is not null and jsonb_typeof(r -> 'buyer') = 'object' then
-      select f.contact_id, f.created into v_buyer, v_created from public.contact_for_row(r -> 'buyer', null) f;
+      select f.contact_id, f.created into v_buyer, v_created from public.import_contact(r -> 'buyer') f;
       if v_created then new_people := new_people + 1; else matched := matched + 1; end if;
     end if;
 
@@ -743,6 +810,23 @@ begin
     end if;
 
     select id into v_id from public.inkind_items where import_key = v_key;
+    if v_id is null and v_donor is not null then
+      -- the same item already in the CRM from an earlier gift list or typed in
+      -- by hand: same event, same donor, and the same name or value
+      select i.id into v_id from public.inkind_items i
+      where i.import_key is null
+        and lower(trim(i.event_name)) = lower(v_event)
+        and i.donor_contact_id = v_donor
+        and (lower(trim(i.title)) = lower(trim(r ->> 'title'))
+             or i.fair_market_value = nullif(r ->> 'fair_market_value', '')::numeric)
+      order by i.created_at
+      limit 1;
+      if v_id is not null then
+        update public.inkind_items
+        set import_key = v_key, item_number = coalesce(item_number, nullif(trim(coalesce(r ->> 'item_number', '')), ''))
+        where id = v_id;
+      end if;
+    end if;
     if v_id is null then
       insert into public.inkind_items (event_name, item_number, title, description, sale_type, is_service,
         donor_contact_id, fair_market_value, received_date, buyer_contact_id, bidder_number, sold_amount, sold_date,
@@ -812,7 +896,15 @@ begin
     is_board_member = k.is_board_member or d.is_board_member,
     is_volunteer = k.is_volunteer or d.is_volunteer,
     do_not_call = k.do_not_call or d.do_not_call,
-    do_not_mail = k.do_not_mail or d.do_not_mail
+    do_not_mail = k.do_not_mail or d.do_not_mail,
+    -- keep the earliest unsubscribe; still "to review" if either one was
+    unsubscribed_at = least(k.unsubscribed_at, d.unsubscribed_at),
+    unsubscribe_reason = case when k.unsubscribed_at is null then d.unsubscribe_reason
+                              else coalesce(k.unsubscribe_reason, d.unsubscribe_reason) end,
+    unsubscribe_reviewed_at = case
+      when (k.unsubscribed_at is not null and k.unsubscribe_reviewed_at is null)
+        or (d.unsubscribed_at is not null and d.unsubscribe_reviewed_at is null) then null
+      else greatest(k.unsubscribe_reviewed_at, d.unsubscribe_reviewed_at) end
   from public.contacts d
   where k.id = keep_id and d.id = remove_id;
 end;
@@ -830,6 +922,7 @@ revoke execute on function public.delete_inkind_item(uuid) from anon, public;
 revoke execute on function public.adopt_inkind_gifts() from anon, public;
 revoke execute on function public.create_letter(text, uuid, uuid[]) from anon, public;
 revoke execute on function public.mark_letter_emailed(uuid) from anon, public;
+revoke execute on function public.import_contact(jsonb) from anon, public;
 revoke execute on function public.import_volunteers(jsonb, text) from anon, public;
 revoke execute on function public.import_people(jsonb, text) from anon, public;
 revoke execute on function public.import_auction_items(jsonb, text, text) from anon, public;
@@ -839,7 +932,8 @@ revoke execute on function public.get_letter(uuid) from public;
 grant execute on function public.mark_gifts_thanked(uuid[], text, date, text), public.set_contact_preference(uuid, text, boolean, text, text),
   public.add_outreach_note(uuid, text), public.inkind_sync_gift(uuid), public.save_inkind_item(jsonb),
   public.delete_inkind_item(uuid), public.adopt_inkind_gifts(), public.create_letter(text, uuid, uuid[]), public.mark_letter_emailed(uuid),
-  public.import_volunteers(jsonb, text), public.import_people(jsonb, text), public.import_auction_items(jsonb, text, text),
+  public.import_contact(jsonb), public.import_volunteers(jsonb, text), public.import_people(jsonb, text),
+  public.import_auction_items(jsonb, text, text),
   public.prepare_merge(uuid, uuid)
   to authenticated;
 grant execute on function public.get_letter(uuid) to anon, authenticated;

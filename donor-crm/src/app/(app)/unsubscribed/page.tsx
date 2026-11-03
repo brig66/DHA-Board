@@ -44,12 +44,30 @@ export default function UnsubscribedPage() {
         ),
       ]);
       const reviewedAt = new Map(reviewed.map((r) => [r.id, r.unsubscribe_reviewed_at]));
-      const latestOut = new Map<string, PreferenceLog>();
+      // the latest entry per person and channel (an opt-out may have been reversed since)
+      const latest = new Map<string, PreferenceLog>();
       for (const l of log) {
-        if (l.action !== "opt_out") continue;
-        const prev = latestOut.get(l.contact_id);
-        if (!prev || l.created_at > prev.created_at) latestOut.set(l.contact_id, l);
+        const k = `${l.contact_id}|${l.channel}`;
+        const prev = latest.get(k);
+        if (!prev || l.created_at > prev.created_at) latest.set(k, l);
       }
+      /** When and how they opted out of what they're opted out of now (the most recent one). */
+      const sinceHow = (c: ContactSummary, channels: Channel[]): { since: string | null; how: string | null } => {
+        let best: { since: string | null; how: string | null } = { since: null, how: null };
+        const offer = (since: string | null, how: string | null) => {
+          if (since && (!best.since || since > best.since)) best = { since, how };
+        };
+        for (const ch of channels) {
+          const l = latest.get(`${c.id}|${ch}`);
+          const logged = l && l.action === "opt_out" ? l : null;
+          if (logged)
+            offer(logged.created_at, `${CHANNEL_LABELS[ch]}: ${[logged.method, logged.by_name && `recorded by ${logged.by_name}`].filter(Boolean).join(", ")}`);
+          // the unsubscribe link records the date on the person, not in the log
+          if (ch === "email" && c.unsubscribed_at && (!logged || c.unsubscribed_at > logged.created_at))
+            offer(c.unsubscribed_at, `Email: ${c.unsubscribe_reason ?? "unsubscribe link"}`);
+        }
+        return best;
+      };
       const latestNote = new Map<string, OutreachNote>();
       for (const n of notes) {
         const prev = latestNote.get(n.contact_id);
@@ -59,15 +77,12 @@ export default function UnsubscribedPage() {
         contacts
           .filter((c) => !c.is_anonymous && outOf(c).length > 0)
           .map((c) => {
-            const l = latestOut.get(c.id);
             const reviewedOn = reviewedAt.get(c.id) ?? null;
+            const channels = outOf(c);
             return {
               c: { ...c, unsubscribe_reviewed_at: reviewedOn },
-              channels: outOf(c),
-              since: l?.created_at ?? c.unsubscribed_at ?? null,
-              how: l
-                ? `${CHANNEL_LABELS[l.channel]}: ${[l.method, l.by_name && `recorded by ${l.by_name}`].filter(Boolean).join(", ")}`
-                : c.unsubscribe_reason,
+              channels,
+              ...sinceHow(c, channels),
               note: latestNote.get(c.id) ?? null,
               toReview: !!c.unsubscribed_at && !reviewedOn,
             };

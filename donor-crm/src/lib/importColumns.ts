@@ -180,7 +180,9 @@ function personFrom(get: Getter, rawGet: Getter, group: string): AttendeeRow | n
   };
 }
 
-export type VolunteerRow = AttendeeRow & { work_date: string | null; hours: number | null; activity: string | null; notes: string | null };
+export type VolunteerRow = AttendeeRow & {
+  work_date: string | null; hours: number | null; activity: string | null; notes: string | null; dup_index: number | null;
+};
 export type PeopleRow = AttendeeRow & {
   is_board_member: boolean; is_volunteer: boolean; do_not_email: boolean; do_not_call: boolean; do_not_mail: boolean; notes: string | null;
 };
@@ -221,6 +223,7 @@ function getters(r: RawRow, map: ColumnMap): { get: Getter; rawGet: Getter } {
 export function buildVolunteers(raw: RawRow[], map: ColumnMap, d: Defaults): Built<VolunteerRow> {
   const out: Built<VolunteerRow> = { rows: [], skipped: [], notes: [] };
   let noDate = 0;
+  const seen = new Map<string, number>();
   raw.forEach((r, i) => {
     const { get, rawGet } = getters(r, map);
     const p = personFrom(get, rawGet, "");
@@ -228,12 +231,18 @@ export function buildVolunteers(raw: RawRow[], map: ColumnMap, d: Defaults): Bui
     const hours = parseHours(get("hours"));
     const date = (map.work_date ? parseDate(r[map.work_date]) : null) ?? (d.work_date || null);
     if (hours && !date) noDate++;
+    const activity = get("activity") || d.activity || null;
+    // two identical shifts in one file (same person, day, task and hours) are both kept
+    const k = [p.email ?? `${p.first_name} ${p.last_name}|${p.phone ?? ""}`, date, activity, hours].join("|").toLowerCase();
+    const n = (seen.get(k) ?? 0) + 1;
+    seen.set(k, n);
     out.rows.push({
       ...p,
       work_date: date,
       hours,
-      activity: get("activity") || d.activity || null,
+      activity,
       notes: get("notes") || null,
+      dup_index: n > 1 ? n : null,
     });
   });
   if (noDate)
@@ -286,7 +295,8 @@ export function buildAuction(raw: RawRow[], map: ColumnMap, d: Defaults): Built<
       title,
       description: get("description") || null,
       sale_type: saleType(get("sale_type")) ?? (d.sale_type || null),
-      is_service: map.is_service ? truthy(get("is_service")) : null,
+      // a blank Service cell leaves what staff set alone
+      is_service: map.is_service && get("is_service") ? truthy(get("is_service")) : null,
       fair_market_value: money("fair_market_value"),
       received_date: map.received_date ? parseDate(r[map.received_date]) : null,
       bidder_number: get("bidder_number") || null,
