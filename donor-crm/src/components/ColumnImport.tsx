@@ -286,14 +286,14 @@ function FieldRow({
 }) {
   const ex = value ? sample(value) : "";
   return (
-    <div className="grid grid-cols-[9rem_1fr] items-center gap-2 text-sm">
-      <span className="font-semibold">{label}</span>
-      <div className="flex min-w-0 items-center gap-2">
+    <div className="grid grid-cols-[9rem_1fr] items-start gap-2 text-sm">
+      <span className="pt-1.5 font-semibold">{label}</span>
+      <div className="min-w-0">
         <select className={`input py-1 ${value ? "" : "text-[var(--muted)]"}`} value={value} onChange={(e) => onChange(e.target.value)}>
           <option value="">Not in this file</option>
           {headers.map((h) => <option key={h} value={h}>{h}</option>)}
         </select>
-        <span className="muted hidden min-w-0 max-w-[12rem] truncate text-xs md:inline" title={ex}>{ex}</span>
+        {ex && <div className="muted mt-0.5 truncate text-xs" title={ex}>e.g. {ex}</div>}
       </div>
     </div>
   );

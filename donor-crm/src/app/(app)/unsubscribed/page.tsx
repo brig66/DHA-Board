@@ -65,7 +65,9 @@ export default function UnsubscribedPage() {
               c: { ...c, unsubscribe_reviewed_at: reviewedOn },
               channels: outOf(c),
               since: l?.created_at ?? c.unsubscribed_at ?? null,
-              how: l ? [l.method, l.by_name && `recorded by ${l.by_name}`].filter(Boolean).join(", ") : c.unsubscribe_reason,
+              how: l
+                ? `${CHANNEL_LABELS[l.channel]}: ${[l.method, l.by_name && `recorded by ${l.by_name}`].filter(Boolean).join(", ")}`
+                : c.unsubscribe_reason,
               note: latestNote.get(c.id) ?? null,
               toReview: !!c.unsubscribed_at && !reviewedOn,
             };
