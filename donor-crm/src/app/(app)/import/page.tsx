@@ -6,6 +6,8 @@ import Papa from "papaparse";
 import { createClient } from "@/lib/supabase/client";
 import { downloadCsv, money, shortDate } from "@/lib/format";
 import { looksLikeAttendeeList, mapAttendees, mapRows, type AttendeeRow, type MapResult } from "@/lib/importMapper";
+import { templateFor, type ImportKind, type RawRow } from "@/lib/importColumns";
+import ColumnImport from "@/components/ColumnImport";
 
 type ImportSummary = {
   gifts_added: number;
@@ -46,6 +48,15 @@ const FIELD_LABELS: Record<string, string> = {
   event_name: "Event", tracking_no: "Tracking #", payment_method: "Payment method",
 };
 
+type Kind = "gifts" | ImportKind;
+
+const KINDS: { kind: Kind; title: string; text: string }[] = [
+  { kind: "gifts", title: "Gifts or event attendees", text: "Giving Day and donation website exports, gift spreadsheets, attendee lists" },
+  { kind: "volunteers", title: "Volunteers and hours", text: "A volunteer list, with or without dates and hours worked" },
+  { kind: "people", title: "People list", text: "Board members, contact updates, people who asked not to be emailed, called or mailed" },
+  { kind: "auction", title: "Auction or in-kind items", text: "A OneCause item export, or any list of donated items, values and winners" },
+];
+
 async function readFile(file: File): Promise<Record<string, unknown>[]> {
   if (/\.xlsx$/i.test(file.name)) {
     const { default: readXlsxFile } = await import("read-excel-file");
@@ -63,6 +74,8 @@ async function readFile(file: File): Promise<Record<string, unknown>[]> {
 }
 
 export default function ImportPage() {
+  const [kind, setKind] = useState<Kind>("gifts");
+  const [columnFile, setColumnFile] = useState<{ name: string; raw: RawRow[]; key: number } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [mapped, setMapped] = useState<MapResult | null>(null);
   const [label, setLabel] = useState("");
@@ -74,15 +87,44 @@ export default function ImportPage() {
   const [attendeeSummary, setAttendeeSummary] = useState<AttendeeSummary | null>(null);
   const [knownEvents, setKnownEvents] = useState<string[]>([]);
 
-  async function choose(list: FileList | null) {
-    const chosen = Array.from(list ?? []);
+  async function loadEvents() {
+    const supabase = createClient();
+    const [g, a, i] = await Promise.all([
+      supabase.from("donations").select("event_name").limit(10000),
+      supabase.from("event_attendance").select("event_name").limit(10000),
+      supabase.from("inkind_items").select("event_name").limit(10000),
+    ]);
+    setKnownEvents(
+      Array.from(
+        new Set([...(g.data ?? []), ...(a.data ?? []), ...(i.data ?? [])].map((x: { event_name: string }) => x.event_name))
+      ).sort()
+    );
+  }
+
+  async function choose(chosen: File[], as: Kind = kind) {
     setFiles(chosen);
     setMapped(null);
     setSummary(null);
     setAttendeeFiles(null);
     setAttendeeSummary(null);
+    setColumnFile(null);
     setError(null);
     if (!chosen.length) return;
+    if (as !== "gifts") {
+      if (chosen.length > 1) {
+        setError("For this kind of import, please upload one file at a time.");
+        return;
+      }
+      try {
+        const raw = await readFile(chosen[0]);
+        if (!raw.length) return setError(`"${chosen[0].name}" has no rows under its headings.`);
+        if (as === "auction") await loadEvents();
+        setColumnFile({ name: chosen[0].name, raw, key: Date.now() });
+      } catch (e) {
+        setError((e as Error).message);
+      }
+      return;
+    }
     setLabel(chosen.length === 1 ? chosen[0].name.replace(/\.[^.]+$/, "") : "Spreadsheet import");
     const combined: MapResult = { rows: [], skipped: [], recognized: [] };
     try {
@@ -99,14 +141,7 @@ export default function ImportPage() {
             return { fileName: f.name, rows: res.rows, skipped: res.skipped, event: guessEvent(f.name) };
           })
         );
-        const supabase = createClient();
-        const [g, a] = await Promise.all([
-          supabase.from("donations").select("event_name").limit(10000),
-          supabase.from("event_attendance").select("event_name").limit(10000),
-        ]);
-        setKnownEvents(
-          Array.from(new Set([...(g.data ?? []), ...(a.data ?? [])].map((x: { event_name: string }) => x.event_name))).sort()
-        );
+        await loadEvents();
         return;
       }
       for (const { f, raw } of sheets) {
@@ -202,6 +237,10 @@ export default function ImportPage() {
   }
 
   function downloadTemplate() {
+    if (kind !== "gifts") {
+      const t = templateFor(kind);
+      return downloadCsv(t.name, t.header, t.sample);
+    }
     downloadCsv(
       "DHA donor import template.csv",
       ["First Name", "Last Name", "Email", "Phone", "Address", "City", "State", "Zip", "Date", "Amount", "Event", "Payment Method", "Notes"],
@@ -214,17 +253,44 @@ export default function ImportPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="font-display text-2xl font-semibold">Import donors and gifts</h1>
+        <h1 className="font-display text-2xl font-semibold">Import a spreadsheet</h1>
         <p className="muted text-sm">
-          Upload North Texas Giving Day exports, the donation website&rsquo;s Donation History export, or any spreadsheet of
-          gifts (.csv or .xlsx). Each gift is matched to an existing donor when the email, or the name plus phone or
-          address, matches. Gifts already in the CRM (same tracking number) are skipped, so uploading the same file twice
-          is safe. You can also upload an <strong>event attendee list</strong> (names and contact details, no amounts) to
-          record who came to an event.
+          Upload a .csv or .xlsx file. Each person is matched to someone already in the CRM when the email, or the name
+          plus phone or address, matches, so no one is added twice. Uploading the same file again is safe: anything
+          already imported is skipped or updated, not doubled. Anyone who might be a duplicate is listed on{" "}
+          <Link href="/duplicates" className="font-semibold text-teal-700">Possible Duplicates</Link> to check.
         </p>
       </div>
 
       <section className="card flex flex-col gap-4 p-5">
+        <span className="label">What&rsquo;s in the file?</span>
+        <div className="grid gap-2 md:grid-cols-4">
+          {KINDS.map((k) => (
+            <label
+              key={k.kind}
+              className={`cursor-pointer rounded-lg border p-3 text-sm ${kind === k.kind ? "border-teal-700 bg-teal-50" : "border-[var(--border)] bg-white"}`}
+            >
+              <input
+                type="radio"
+                name="import-kind"
+                className="sr-only"
+                checked={kind === k.kind}
+                onChange={() => {
+                  setKind(k.kind);
+                  if (files.length) choose(files, k.kind);
+                }}
+              />
+              <span className="font-semibold">{k.title}</span>
+              <span className="muted mt-1 block text-xs">{k.text}</span>
+            </label>
+          ))}
+        </div>
+        {kind === "gifts" && (
+          <p className="muted text-xs">
+            Gifts already in the CRM (same tracking number) are skipped. An <strong>event attendee list</strong> (names and
+            contact details, no amounts) records who came to an event.
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-3">
           <label className="btn btn-primary cursor-pointer">
             Choose file(s)
@@ -233,7 +299,10 @@ export default function ImportPage() {
               multiple
               accept=".csv,.xlsx,.xls,text/csv"
               className="hidden"
-              onChange={(e) => choose(e.target.files)}
+              onChange={(e) => {
+                choose(Array.from(e.target.files ?? []));
+                e.target.value = "";
+              }}
             />
           </label>
           {files.length > 0 && <span className="text-sm">{files.map((f) => f.name).join(", ")}</span>}
@@ -243,6 +312,17 @@ export default function ImportPage() {
         </div>
         {error && <p className="text-sm text-coral-600">{error}</p>}
       </section>
+
+      {columnFile && kind !== "gifts" && (
+        <ColumnImport
+          key={`${kind}-${columnFile.key}`}
+          kind={kind}
+          fileName={columnFile.name}
+          raw={columnFile.raw}
+          initialEvent={guessEvent(columnFile.name)}
+          knownEvents={knownEvents}
+        />
+      )}
 
       {mapped && (
         <section className="card flex flex-col gap-4 p-5">

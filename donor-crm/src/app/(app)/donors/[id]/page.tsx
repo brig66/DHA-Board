@@ -10,13 +10,19 @@ import ContactForm, { type ContactDraft } from "@/components/ContactForm";
 import EmailPreview from "@/components/EmailPreview";
 import { deliveryOf, isTracked } from "@/lib/emailStatus";
 import { buildEmailHtml } from "../../../../../supabase/functions/_shared/email-html";
+import { thankStatus, thankYouEmailsByContact, todayLocal } from "@/lib/thanks";
+import PreferencesCard from "@/components/PreferencesCard";
 import {
   GIFT_TYPES,
+  THANK_METHODS,
   type ContactSummary,
   type Donation,
   type EmailLog,
   type EventAttendance,
   type GiftType,
+  type InkindItem,
+  type OutreachNote,
+  type PreferenceLog,
   type VolunteerHours,
 } from "@/lib/types";
 
@@ -41,15 +47,20 @@ type GiftDraft = {
   gift_type: GiftType;
   payment_method: string;
   notes: string;
+  /** in-kind only: what was donated, and whether it is a service */
+  title: string;
+  is_service: boolean;
 };
 
 const blankGift = (): GiftDraft => ({
-  gift_date: new Date().toISOString().slice(0, 10),
+  gift_date: todayLocal(),
   amount: "",
   event_name: "",
   gift_type: "Donation",
   payment_method: "",
   notes: "",
+  title: "",
+  is_service: false,
 });
 
 export default function DonorPage() {
@@ -72,10 +83,16 @@ export default function DonorPage() {
   const [hourValue, setHourValue] = useState<number | null>(null);
   const [hoursForm, setHoursForm] = useState<HoursDraft | null>(null);
   const [editHoursId, setEditHoursId] = useState<string | null>(null);
+  const [prefLog, setPrefLog] = useState<PreferenceLog[]>([]);
+  const [outreach, setOutreach] = useState<OutreachNote[]>([]);
+  const [newNote, setNewNote] = useState("");
+  const [donated, setDonated] = useState<InkindItem[]>([]);
+  const [bought, setBought] = useState<InkindItem[]>([]);
+  const [thankGift, setThankGift] = useState<{ id: string; method: string; on: string } | null>(null);
 
   const load = useCallback(async () => {
     const supabase = createClient();
-    const [c, g, e, ev, at, atAll, vh, vhAll, st] = await Promise.all([
+    const [c, g, e, ev, at, atAll, vh, vhAll, st, pl, on, dn, bt] = await Promise.all([
       supabase.from("contact_summary").select("*").eq("id", id).maybeSingle(),
       supabase.from("donations").select("*").eq("contact_id", id).order("gift_date", { ascending: false }),
       supabase.from("email_log").select("*").eq("contact_id", id).order("sent_at", { ascending: false }),
@@ -90,6 +107,10 @@ export default function DonorPage() {
         .order("created_at", { ascending: false }),
       supabase.from("volunteer_hours").select("activity").limit(10000),
       supabase.from("settings").select("volunteer_hour_value").eq("id", 1).maybeSingle(),
+      supabase.from("contact_preference_log").select("*").eq("contact_id", id).order("created_at", { ascending: false }),
+      supabase.from("outreach_notes").select("*").eq("contact_id", id).order("created_at", { ascending: false }),
+      supabase.from("inkind_items").select("*").eq("donor_contact_id", id),
+      supabase.from("inkind_items").select("*").eq("buyer_contact_id", id).order("created_at", { ascending: false }),
     ]);
     if (c.error) setError(c.error.message);
     setContact(c.data as ContactSummary | null);
@@ -97,6 +118,10 @@ export default function DonorPage() {
     setEmails((e.data ?? []) as EmailLog[]);
     setAttended((at.data ?? []) as EventAttendance[]);
     setHours((vh.data ?? []) as VolunteerHours[]);
+    setPrefLog((pl.data ?? []) as PreferenceLog[]);
+    setOutreach((on.data ?? []) as OutreachNote[]);
+    setDonated((dn.data ?? []) as InkindItem[]);
+    setBought((bt.data ?? []) as InkindItem[]);
     setActivities(
       Array.from(new Set(["General volunteering", ...(vhAll.data ?? []).map((x: { activity: string }) => x.activity)])).sort()
     );
@@ -139,6 +164,29 @@ export default function DonorPage() {
   async function saveGift(e: React.FormEvent) {
     e.preventDefault();
     if (!giftForm) return;
+    if (giftForm.gift_type === "In-kind" && !editGiftId) {
+      // in-kind gifts are items on the In-Kind tab; saving one adds the gift here too
+      if (!giftForm.title.trim()) return setError("Enter what was donated.");
+      const value = giftForm.amount.trim() ? parseFloat(giftForm.amount.replace(/[^0-9.]/g, "")) : null;
+      if (value !== null && isNaN(value)) return setError("Enter the market value in dollars, or leave it blank.");
+      setError(null);
+      const { error } = await createClient().rpc("save_inkind_item", {
+        p: {
+          title: giftForm.title.trim(),
+          description: giftForm.notes.trim() || null,
+          event_name: giftForm.event_name.trim() || "In-kind donation",
+          sale_type: "Not auctioned",
+          is_service: giftForm.is_service,
+          donor_contact_id: id,
+          fair_market_value: value,
+          received_date: giftForm.gift_date,
+        },
+      });
+      if (error) return setError(error.message);
+      setGiftForm(null);
+      load();
+      return;
+    }
     const amount = parseFloat(giftForm.amount.replace(/[^0-9.]/g, ""));
     if (isNaN(amount)) return setError("Enter the gift amount.");
     setError(null);
@@ -176,7 +224,39 @@ export default function DonorPage() {
       gift_type: g.gift_type ?? "Donation",
       payment_method: g.payment_method ?? "",
       notes: g.notes ?? "",
+      title: "",
+      is_service: false,
     });
+  }
+
+  async function markGiftThanked() {
+    if (!thankGift) return;
+    setError(null);
+    const { error } = await createClient().rpc("mark_gifts_thanked", {
+      p_gift_ids: [thankGift.id],
+      p_method: thankGift.method,
+      p_on: thankGift.on || todayLocal(),
+    });
+    if (error) return setError(error.message);
+    setThankGift(null);
+    load();
+  }
+
+  async function clearGiftThanked(g: Donation) {
+    if (!confirm(`Clear the thank-you recorded for the ${money(g.amount)} gift from ${shortDate(g.gift_date)}? It will appear under Needs a thank-you again.`)) return;
+    const { error } = await createClient().rpc("mark_gifts_thanked", { p_gift_ids: [g.id], p_method: null });
+    if (error) return setError(error.message);
+    load();
+  }
+
+  async function addNote(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newNote.trim()) return;
+    setError(null);
+    const { error } = await createClient().rpc("add_outreach_note", { p_contact: id, p_note: newNote });
+    if (error) return setError(error.message);
+    setNewNote("");
+    load();
   }
 
   async function addAttendance(e: React.FormEvent) {
@@ -244,6 +324,7 @@ export default function DonorPage() {
   }
 
   if (!contact) return <p className="muted">{error ?? "Loading…"}</p>;
+  const thankEmails = thankYouEmailsByContact(emails);
 
   return (
     <div className="flex flex-col gap-6">
@@ -301,22 +382,18 @@ export default function DonorPage() {
                 <div key={e} className="muted text-xs">also {e}</div>
               ))}
               {contact.do_not_email && <div><span className="pill pill-bad mt-1">Do not email</span></div>}
-              {contact.unsubscribed_at && (
-                <div className="mt-1 text-xs text-[#b8862e]">
-                  Unsubscribed {shortDate(contact.unsubscribed_at)}
-                  {contact.unsubscribe_reason ? ` (${contact.unsubscribe_reason.toLowerCase()})` : ""}
-                </div>
-              )}
             </Item>
             <Item label="Phone">
               {contact.phone ? <a className="text-teal-700" href={`tel:${contact.phone.replace(/\D/g, "")}`}>{contact.phone}</a> : "—"}
               {contact.alt_phones.map((p) => (
                 <div key={p} className="muted text-xs">also {p}</div>
               ))}
+              {contact.do_not_call && <div><span className="pill pill-bad mt-1">Do not call</span></div>}
             </Item>
             <Item label="Mailing address">
               {contact.address ?? "—"}
               <div>{cityLine(contact)}</div>
+              {contact.do_not_mail && <div><span className="pill pill-bad mt-1">Do not mail</span></div>}
             </Item>
             <Item label="Last gift">
               {money(contact.last_gift_amount)} on {shortDate(contact.last_gift_date)}
@@ -329,6 +406,8 @@ export default function DonorPage() {
           </dl>
         )}
       </section>
+
+      {!contact.is_anonymous && <PreferencesCard contact={contact} log={prefLog} onChanged={load} />}
 
       <section className="card overflow-hidden">
         <div className="flex items-center justify-between p-4">
@@ -359,9 +438,16 @@ export default function DonorPage() {
               <input type="date" required className="input mt-1" value={giftForm.gift_date}
                 onChange={(e) => setGiftForm({ ...giftForm, gift_date: e.target.value })} />
             </div>
+            {giftForm.gift_type === "In-kind" && !editGiftId && (
+              <div className="md:col-span-6">
+                <label className="label">What was donated</label>
+                <input required className="input mt-1" placeholder="e.g. Teeth whitening package, or 40 toothbrush kits" value={giftForm.title}
+                  onChange={(e) => setGiftForm({ ...giftForm, title: e.target.value })} />
+              </div>
+            )}
             <div>
-              <label className="label">{giftForm.gift_type === "In-kind" ? "Value ($)" : "Amount ($)"}</label>
-              <input required inputMode="decimal" className="input mt-1" value={giftForm.amount}
+              <label className="label">{giftForm.gift_type === "In-kind" ? "Market value ($)" : "Amount ($)"}</label>
+              <input required={giftForm.gift_type !== "In-kind"} inputMode="decimal" className="input mt-1" value={giftForm.amount}
                 onChange={(e) => setGiftForm({ ...giftForm, amount: e.target.value })} />
             </div>
             <div className="md:col-span-2">
@@ -369,19 +455,33 @@ export default function DonorPage() {
               <input list="event-list" className="input mt-1" placeholder="e.g. NTX Giving Day 2026" value={giftForm.event_name}
                 onChange={(e) => setGiftForm({ ...giftForm, event_name: e.target.value })} />
             </div>
-            <div className="md:col-span-2">
-              <label className="label">Payment method</label>
-              <input list="pay-list" className="input mt-1" value={giftForm.payment_method}
-                onChange={(e) => setGiftForm({ ...giftForm, payment_method: e.target.value })} />
-              <datalist id="pay-list">
-                {["Check", "Cash", "Credit Card", "PayPal", "Stock", "In-kind"].map((p) => <option key={p} value={p} />)}
-              </datalist>
-            </div>
+            {giftForm.gift_type === "In-kind" && !editGiftId ? (
+              <label className="flex items-end gap-2 pb-2 text-sm md:col-span-2">
+                <input type="checkbox" checked={giftForm.is_service}
+                  onChange={(e) => setGiftForm({ ...giftForm, is_service: e.target.checked })} />
+                This is a service (for example a dental cleaning or a spa day)
+              </label>
+            ) : (
+              <div className="md:col-span-2">
+                <label className="label">Payment method</label>
+                <input list="pay-list" className="input mt-1" value={giftForm.payment_method}
+                  onChange={(e) => setGiftForm({ ...giftForm, payment_method: e.target.value })} />
+                <datalist id="pay-list">
+                  {["Check", "Cash", "Credit Card", "PayPal", "Stock", "In-kind"].map((p) => <option key={p} value={p} />)}
+                </datalist>
+              </div>
+            )}
             <div className="md:col-span-6">
-              <label className="label">Notes</label>
+              <label className="label">{giftForm.gift_type === "In-kind" && !editGiftId ? "Description (optional)" : "Notes"}</label>
               <input className="input mt-1" value={giftForm.notes}
                 onChange={(e) => setGiftForm({ ...giftForm, notes: e.target.value })} />
             </div>
+            {giftForm.gift_type === "In-kind" && !editGiftId && (
+              <p className="muted text-xs md:col-span-6">
+                In-kind gifts also appear on the In-Kind tab, where you can add auction results and send the donor a
+                thank-you letter for their tax records.
+              </p>
+            )}
             <div className="flex gap-2 md:col-span-6">
               <button className="btn btn-primary">{editGiftId ? "Save gift" : "Add gift"}</button>
               <button type="button" className="btn btn-secondary" onClick={() => { setGiftForm(null); setEditGiftId(null); }}>
@@ -399,12 +499,17 @@ export default function DonorPage() {
                 <th className="text-right">Amount</th>
                 <th>Event</th>
                 <th>Details</th>
+                <th>Thanked</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {gifts.map((g) => (
-                <tr key={g.id}>
+              {gifts.map((g) => {
+                const item = donated.find((i) => i.donation_id === g.id);
+                const ty = thankStatus(g, thankEmails);
+                return (
+                <Fragment key={g.id}>
+                <tr>
                   <td className="whitespace-nowrap">{shortDate(g.gift_date)}</td>
                   <td className="text-right">
                     {money(g.amount)}
@@ -423,14 +528,70 @@ export default function DonorPage() {
                       .filter(Boolean)
                       .map((x) => <div key={String(x)}>{x}</div>)}
                   </td>
+                  <td className="text-xs">
+                    {ty.kind === "thanked" && (
+                      <>
+                        <span className="pill pill-good">{ty.method}</span>
+                        <div className="muted mt-1">
+                          {shortDate(ty.on)}{ty.by ? ` · ${ty.by}` : ""}
+                          {g.thanked_note && <div>{g.thanked_note}</div>}
+                        </div>
+                        <button className="font-semibold text-coral-600" onClick={() => clearGiftThanked(g)}>Clear</button>
+                      </>
+                    )}
+                    {ty.kind === "emailed" && (
+                      <>
+                        <span className="pill pill-good">Thank-you email</span>
+                        <div className="muted mt-1">{shortDate(ty.on)}</div>
+                      </>
+                    )}
+                    {ty.kind === "needed" && thankGift?.id !== g.id && (
+                      <button className="font-semibold text-teal-700"
+                        onClick={() => setThankGift({ id: g.id, method: "Letter", on: todayLocal() })}>
+                        Mark thanked
+                      </button>
+                    )}
+                  </td>
                   <td className="whitespace-nowrap text-right">
-                    <button className="text-xs font-semibold text-teal-700" onClick={() => startEditGift(g)}>Edit</button>
-                    <button className="ml-3 text-xs font-semibold text-coral-600" onClick={() => deleteGift(g)}>Delete</button>
+                    {item ? (
+                      <Link href={`/in-kind?item=${item.id}`} className="text-xs font-semibold text-teal-700">
+                        Open on In-Kind tab
+                      </Link>
+                    ) : (
+                      <>
+                        <button className="text-xs font-semibold text-teal-700" onClick={() => startEditGift(g)}>Edit</button>
+                        <button className="ml-3 text-xs font-semibold text-coral-600" onClick={() => deleteGift(g)}>Delete</button>
+                      </>
+                    )}
                   </td>
                 </tr>
-              ))}
+                {thankGift?.id === g.id && (
+                  <tr>
+                    <td colSpan={6} className="bg-[#faf8f3]">
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div>
+                          <label className="label">Thanked by</label>
+                          <select className="input mt-1 w-auto" value={thankGift.method}
+                            onChange={(e) => setThankGift({ ...thankGift, method: e.target.value })}>
+                            {THANK_METHODS.map((m) => <option key={m}>{m}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="label">On</label>
+                          <input type="date" className="input mt-1 w-auto" value={thankGift.on} max={todayLocal()}
+                            onChange={(e) => setThankGift({ ...thankGift, on: e.target.value })} />
+                        </div>
+                        <button className="btn btn-primary btn-sm" onClick={markGiftThanked}>Save</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setThankGift(null)}>Cancel</button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+                );
+              })}
               {gifts.length === 0 && (
-                <tr><td colSpan={5} className="muted p-4 text-center">No gifts recorded yet.</td></tr>
+                <tr><td colSpan={6} className="muted p-4 text-center">No gifts recorded yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -452,6 +613,67 @@ export default function DonorPage() {
           onEdit={startEditHours}
           onDelete={deleteHours}
         />
+      )}
+
+      {bought.length > 0 && (
+        <section className="card overflow-hidden">
+          <div className="p-4">
+            <h2 className="font-display text-lg font-semibold">Auction purchases</h2>
+            <p className="muted text-sm">
+              Items this person won. These are listed separately from their gifts; the In-Kind tab can send them a receipt
+              showing the part of each payment that may be tax-deductible.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Item</th>
+                  <th className="text-right">Paid</th>
+                  <th className="text-right">Market value</th>
+                  <th>Receipt</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bought.map((i) => (
+                  <tr key={i.id}>
+                    <td>{i.event_name}</td>
+                    <td>
+                      <Link href={`/in-kind?item=${i.id}`} className="font-semibold text-teal-700">
+                        {i.item_number ? `#${i.item_number} ` : ""}{i.title}
+                      </Link>
+                    </td>
+                    <td className="text-right">{money(i.sold_amount)}</td>
+                    <td className="text-right">{money(i.fair_market_value)}</td>
+                    <td className="text-sm">{i.buyer_receipt_sent_at ? `Emailed ${shortDate(i.buyer_receipt_sent_at)}` : <span className="muted">Not sent</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {!contact.is_anonymous && (
+        <section className="card p-4">
+          <h2 className="font-display text-lg font-semibold">Call and outreach notes</h2>
+          <p className="muted text-sm">For example, &ldquo;Left a voicemail&rdquo; or &ldquo;Will renew in December.&rdquo;</p>
+          <form onSubmit={addNote} className="mt-3 flex flex-wrap gap-2">
+            <input className="input min-w-64 flex-1" placeholder="Add a note…" value={newNote} onChange={(e) => setNewNote(e.target.value)} />
+            <button className="btn btn-secondary btn-sm" disabled={!newNote.trim()}>Add note</button>
+          </form>
+          {outreach.length > 0 && (
+            <ul className="mt-3 flex flex-col gap-2 text-sm">
+              {outreach.map((n) => (
+                <li key={n.id} className="border-t border-[var(--border)] pt-2">
+                  <span className="whitespace-pre-wrap">{n.note}</span>
+                  <div className="muted text-xs">{shortDate(n.created_at)}{n.by_name ? ` · ${n.by_name}` : ""}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       <section className="card p-4">

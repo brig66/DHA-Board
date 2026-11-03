@@ -184,6 +184,8 @@ export default function SettingsPage() {
         </section>
       )}
 
+      {settings && <LettersSettings settings={settings} onSaved={load} />}
+
       {settings && (
         <section className="card p-5">
           <h2 className="font-display text-lg font-semibold">Volunteer time</h2>
@@ -203,5 +205,71 @@ export default function SettingsPage() {
         </section>
       )}
     </div>
+  );
+}
+
+const LETTER_FIELDS: { key: keyof Settings; label: string; hint?: string; wide?: boolean }[] = [
+  { key: "org_legal_name", label: "Legal name (as the IRS lists it)", wide: true },
+  { key: "org_display_name", label: "Name used in emails" },
+  { key: "org_ein", label: "EIN (federal tax ID)" },
+  { key: "org_address", label: "Street address" },
+  { key: "org_city_line", label: "City, state and zip" },
+  { key: "org_phone", label: "Phone" },
+  { key: "letter_signer_name", label: "Letters signed by" },
+  { key: "letter_signer_title", label: "Signer's title" },
+  {
+    key: "site_url",
+    label: "Public CRM address",
+    hint: "The address donors' letter download links use. It must open without a Vercel sign-in.",
+    wide: true,
+  },
+];
+
+/** The letterhead and signature on in-kind thank-you letters and buyer receipts. */
+function LettersSettings({ settings, onSaved }: { settings: Settings; onSaved: () => void }) {
+  const [draft, setDraft] = useState<Record<string, string>>(() =>
+    Object.fromEntries(LETTER_FIELDS.map((f) => [f.key, String(settings[f.key] ?? "")]))
+  );
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setSaved(false);
+    setError(null);
+    const changes: Record<string, string | null> = {};
+    for (const f of LETTER_FIELDS) changes[f.key] = draft[f.key].trim();
+    const url = (changes.site_url ?? "").replace(/\/+$/, "");
+    if (url && !/^https:\/\/[^\s/]+\.[^\s/]+/.test(url)) return setError("The CRM address should start with https://");
+    changes.site_url = url || null;
+    if (!changes.org_legal_name || !changes.org_ein) return setError("The legal name and EIN are required on tax letters.");
+    const { error } = await createClient().from("settings").update(changes).eq("id", 1);
+    if (error) return setError(error.message);
+    setSaved(true);
+    onSaved();
+  }
+
+  return (
+    <section className="card p-5">
+      <h2 className="font-display text-lg font-semibold">Thank-you letters and receipts</h2>
+      <p className="muted text-sm">
+        These details print on the PDF letters donors and auction buyers download for their tax records. Letters
+        already sent keep the details they were made with.
+      </p>
+      <form onSubmit={save} className="mt-4 grid gap-4 md:grid-cols-2">
+        {LETTER_FIELDS.map((f) => (
+          <div key={f.key} className={f.wide ? "md:col-span-2" : ""}>
+            <label className="label">{f.label}</label>
+            <input className="input mt-1" value={draft[f.key]} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })} />
+            {f.hint && <p className="muted mt-1 text-xs">{f.hint}</p>}
+          </div>
+        ))}
+        <div className="flex items-center gap-3">
+          <button className="btn btn-primary">Save letter details</button>
+          {saved && <span className="text-sm text-teal-700">Saved.</span>}
+          {error && <span className="text-sm text-coral-600">{error}</span>}
+        </div>
+      </form>
+    </section>
   );
 }

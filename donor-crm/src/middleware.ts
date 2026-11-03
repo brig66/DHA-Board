@@ -2,8 +2,9 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/signup"];
-// pages anyone can open, signed in or not (donors clicking "Unsubscribe")
-const OPEN_PATHS = ["/unsubscribe"];
+// pages anyone can open, signed in or not (donors clicking "Unsubscribe", or
+// opening their thank-you letter from an email)
+const OPEN_PATHS = ["/unsubscribe", "/letter/"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });

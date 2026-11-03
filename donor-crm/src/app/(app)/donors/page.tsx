@@ -160,7 +160,7 @@ function DonorList() {
         "First Name", "Last Name", "Organization", "Email", "Other Emails", "Phone", "Other Phones", "Address", "City",
         "State", "Zip", "Total Given", "Number of Gifts", "First Gift", "Last Gift", "Last Gift Amount",
         "Last Gift Event", "All Events", "Years Given", "Events Attended", "Volunteer", "Volunteer Hours",
-        "Last Volunteered", "Do Not Email", "Notes",
+        "Last Volunteered", "Do Not Email", "Do Not Call", "Do Not Mail", "Notes",
       ],
       rows.map((c) => [
         c.first_name, c.last_name, c.organization, c.email, c.alt_emails.join("; "), c.phone, c.alt_phones.join("; "),
@@ -171,6 +171,8 @@ function DonorList() {
         Number(c.volunteer_hours) > 0 ? Number(c.volunteer_hours) : "",
         c.last_volunteer_date,
         c.do_not_email ? "Yes" : "",
+        c.do_not_call ? "Yes" : "",
+        c.do_not_mail ? "Yes" : "",
         c.notes,
       ])
     );
@@ -347,6 +349,8 @@ function DonorList() {
                   </Link>
                   {c.is_volunteer && <span className="pill pill-good ml-2">Volunteer</span>}
                   {c.do_not_email && <span className="pill pill-bad ml-2">Do not email</span>}
+                  {c.do_not_call && <span className="pill pill-bad ml-2">Do not call</span>}
+                  {c.do_not_mail && <span className="pill pill-bad ml-2">Do not mail</span>}
                   {Number(c.volunteer_hours) > 0 && (
                     <div className="muted text-xs">{hoursText(c.volunteer_hours)} volunteered</div>
                   )}

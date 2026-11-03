@@ -22,6 +22,8 @@ export type Contact = {
   country: string | null;
   notes: string | null;
   do_not_email: boolean;
+  do_not_call: boolean;
+  do_not_mail: boolean;
   is_anonymous: boolean;
   organization: string | null;
   is_board_member: boolean;
@@ -47,6 +49,8 @@ export type ContactSummary = Contact & {
   volunteer_hours: number;
   volunteer_entries: number;
   last_volunteer_date: string | null;
+  auction_purchases: number;
+  auction_purchases_total: number;
 };
 
 export type VolunteerHours = {
@@ -77,6 +81,11 @@ export type Donation = {
   source: string | null;
   notes: string | null;
   created_at: string;
+  /** when, how and by whom the donor was thanked for this gift */
+  thanked_on: string | null;
+  thanked_method: string | null;
+  thanked_by_name: string | null;
+  thanked_note: string | null;
 };
 
 export const GIFT_TYPES = ["Donation", "Event ticket / registration", "In-kind"] as const;
@@ -130,4 +139,105 @@ export type Settings = {
   email_footer: string;
   /** Dollar value of one volunteer hour, set by an admin. Blank shows no dollar values. */
   volunteer_hour_value: number | null;
+  /** the CRM address donors can open without signing in (used in letter links) */
+  site_url: string | null;
+  org_legal_name: string;
+  org_display_name: string;
+  org_ein: string;
+  org_address: string;
+  org_city_line: string;
+  org_phone: string;
+  letter_signer_name: string;
+  letter_signer_title: string;
+};
+
+export const THANK_METHODS = ["Letter", "Card", "Phone call", "In person", "Email outside the CRM", "Other"] as const;
+
+export type Channel = "email" | "call" | "mail";
+export const CHANNEL_LABELS: Record<Channel, string> = { email: "Email", call: "Calls", mail: "Mail" };
+export const OPT_OUT_METHODS = ["Phone call", "In person", "Mail", "Email reply", "Other"] as const;
+
+export type PreferenceLog = {
+  id: string;
+  contact_id: string;
+  channel: Channel;
+  action: "opt_out" | "opt_in";
+  method: string | null;
+  note: string | null;
+  by_name: string | null;
+  created_at: string;
+};
+
+export type OutreachNote = {
+  id: string;
+  contact_id: string;
+  note: string;
+  by_name: string | null;
+  created_at: string;
+};
+
+export const SALE_TYPES = ["Silent auction", "Live auction", "Raffle", "Not auctioned"] as const;
+export type SaleType = (typeof SALE_TYPES)[number];
+
+export type InkindItem = {
+  id: string;
+  event_name: string;
+  item_number: string | null;
+  title: string;
+  description: string | null;
+  sale_type: SaleType | null;
+  is_service: boolean;
+  donor_contact_id: string | null;
+  fair_market_value: number | null;
+  received_date: string | null;
+  buyer_contact_id: string | null;
+  bidder_number: string | null;
+  sold_amount: number | null;
+  sold_date: string | null;
+  notes: string | null;
+  donation_id: string | null;
+  source: string | null;
+  donor_letter_sent_at: string | null;
+  buyer_receipt_sent_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LetterKind = "inkind_ack" | "buyer_receipt";
+
+/** What a letter said when it was made (kept so it never changes later). */
+export type LetterSnapshot = {
+  kind: LetterKind;
+  letter_date: string;
+  org: {
+    legal_name: string;
+    display_name: string;
+    ein: string;
+    address: string;
+    city_line: string;
+    phone: string;
+    signer_name: string;
+    signer_title: string;
+  };
+  recipient: {
+    first_name: string;
+    last_name: string;
+    organization: string | null;
+    address: string | null;
+    city: string | null;
+    state: string | null;
+    zip: string | null;
+  };
+  items: {
+    title: string;
+    description: string | null;
+    item_number: string | null;
+    event_name: string;
+    is_service: boolean;
+    sale_type: string | null;
+    received_date: string | null;
+    fair_market_value: number | null;
+    sold_amount: number | null;
+    deductible: number;
+  }[];
 };
