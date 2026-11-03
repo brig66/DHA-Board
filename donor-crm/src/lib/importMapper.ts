@@ -97,7 +97,7 @@ const ALIASES: Record<string, string[]> = {
   refund: ["refund"],
 };
 
-function str(v: unknown): string {
+export function str(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (v instanceof Date) return v.toISOString();
   return String(v).replace(/\s+/g, " ").trim();
@@ -129,7 +129,7 @@ export function properCase(s: string, isName = true): string {
   return out;
 }
 
-function cleanFirstName(s: string): string {
+export function cleanFirstName(s: string): string {
   return properCase(
     s
       .replace(/\(.*?\)/g, "") // "Sarah (Sally)" -> "Sarah"
@@ -147,14 +147,14 @@ export function formatPhone(raw: string): string | null {
   return raw.trim() || null;
 }
 
-function cleanZip(raw: string): string | null {
+export function cleanZip(raw: string): string | null {
   const z = raw.replace(/[^0-9-]/g, "");
   if (!z) return null;
   if (/^\d{4}$/.test(z)) return "0" + z; // spreadsheet dropped a leading zero
   return z;
 }
 
-function parseAmount(raw: string): number | null {
+export function parseAmount(raw: string): number | null {
   if (!raw) return null;
   const neg = /^\(.*\)$/.test(raw.trim()) || raw.includes("-");
   const n = parseFloat(raw.replace(/[^0-9.]/g, ""));
@@ -162,7 +162,7 @@ function parseAmount(raw: string): number | null {
   return neg ? -n : n;
 }
 
-function parseDate(v: unknown): string | null {
+export function parseDate(v: unknown): string | null {
   if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10);
   const s = str(v);
   if (!s) return null;
@@ -360,7 +360,7 @@ const NOT_AN_ORG = /^(individual|anonymous|n\/?a|none|self|dha|dental health arl
 
 const UNKNOWN_CONTACT = /\s*(contact unknown|unknown donor|\d+ tickets?)\s*$/i;
 
-function cleanOrganization(raw: string): string | null {
+export function cleanOrganization(raw: string): string | null {
   const o = raw.replace(/\s+/g, " ").trim();
   if (!o || NOT_AN_ORG.test(o)) return null;
   return o;

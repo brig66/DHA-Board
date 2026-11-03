@@ -111,6 +111,10 @@ alter table public.contacts add column if not exists organization text;
 alter table public.donations add column if not exists gift_type text not null default 'Donation';
 alter table public.contacts add column if not exists is_board_member boolean not null default false;
 alter table public.contacts add column if not exists is_volunteer boolean not null default false;
+-- needed here because the donor summary below shows them
+alter table public.contacts add column if not exists unsubscribed_at timestamptz;
+alter table public.contacts add column if not exists unsubscribe_reason text;
+alter table public.contacts add column if not exists unsubscribe_reviewed_at timestamptz;
 
 -- Who came to which event (from attendee lists; no dollar amount)
 create table if not exists public.event_attendance (

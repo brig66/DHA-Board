@@ -6,13 +6,13 @@ import type { Contact } from "@/lib/types";
 export type ContactDraft = Pick<
   Contact,
   | "first_name" | "last_name" | "email" | "alt_emails" | "phone" | "alt_phones" | "address"
-  | "city" | "state" | "zip" | "country" | "notes" | "do_not_email" | "organization" | "is_board_member"
+  | "city" | "state" | "zip" | "country" | "notes" | "organization" | "is_board_member"
   | "is_volunteer"
 >;
 
 export const emptyDraft: ContactDraft = {
   first_name: "", last_name: "", email: null, alt_emails: [], phone: null, alt_phones: [],
-  address: null, city: null, state: null, zip: null, country: null, notes: null, do_not_email: false,
+  address: null, city: null, state: null, zip: null, country: null, notes: null,
   organization: null,
   is_board_member: false,
   is_volunteer: false,
@@ -92,19 +92,6 @@ export default function ContactForm({
         <label className="label" htmlFor="notes">Notes</label>
         <textarea id="notes" rows={3} className="input mt-1" value={d.notes ?? ""} onChange={set("notes")} />
       </div>
-      <label className="flex items-center gap-2 text-sm md:col-span-6">
-        <input
-          type="checkbox"
-          checked={d.do_not_email}
-          onChange={(e) => setD({ ...d, do_not_email: e.target.checked })}
-        />
-        Do not email this person (they asked to be removed)
-      </label>
-      {(initial as { unsubscribed_at?: string | null }).unsubscribed_at && !d.do_not_email && (
-        <p className="-mt-2 text-sm text-[#b8862e] md:col-span-6">
-          This donor unsubscribed from emails. Only turn emails back on if they have asked to receive them again.
-        </p>
-      )}
       <label className="flex items-center gap-2 text-sm md:col-span-6">
         <input
           type="checkbox"

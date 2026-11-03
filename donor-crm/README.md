@@ -32,18 +32,56 @@ its own sign-ins, and its own database.
   - Three starter templates are included: a thank-you, a Giving Day renewal
     request, and a year-end thank-you. You can edit them or save new ones.
 - **Dashboard.** Shows:
-  - **Needs a thank-you:** recent donors who haven't been emailed since giving.
-  - **Renewal opportunities:** past donors who haven't given in 12 months.
-  - **Giving by event:** totals for each event.
-- **Import.** Upload North Texas Giving Day exports, or any spreadsheet with
-  columns like First Name, Last Name, Email, Amount, and Date (.csv or .xlsx).
-  - Several files can be uploaded at once.
-  - Gifts already in the CRM are skipped, so uploading the same file twice is
-    harmless.
-  - A blank template is available on the Import page.
+  - **Needs a thank-you:** every gift not yet thanked. Tick the gifts, choose
+    how they were thanked (letter, card, phone call, and so on) and the date,
+    and they leave the list. The record stays on the gift, so the donor's page
+    shows when and how each gift was thanked. A thank-you email sent from the
+    CRM counts automatically.
+  - **Renewal opportunities:** past donors who haven't given in 12 months,
+    including ones with no email. **+ Record gift** on any row adds a gift
+    when someone renews by check or phone.
+  - **Giving by event:** totals for each event. **Total raised** counts each
+    auction item once: at what it sold for, or at its market value if it
+    didn't sell.
+- **Import.** Upload a .csv or .xlsx file and choose what's in it:
+  - **Gifts or event attendees:** North Texas Giving Day exports, the
+    donation website's export, any gift spreadsheet, or an attendee list.
+    Several files can be uploaded at once.
+  - **Volunteers and hours:** a volunteer list, with or without dates and
+    hours worked.
+  - **People list:** board members, contact updates, and people who asked not
+    to be emailed, called, or mailed.
+  - **Auction or in-kind items:** a OneCause item export or any list of
+    donated items, values, and winners.
+  - For volunteers, people, and auction items, the CRM shows which column it
+    matched to each field, and staff can change any match before importing.
+  - Uploading the same file twice is harmless: gifts and hours already in the
+    CRM are skipped, and auction items are updated rather than added again.
+  - A blank template for each kind is on the Import page.
+- **In-Kind tab.** Every donated item or service: who gave it, its market
+  value, what it sold for, and who bought it. Each item appears on its donor's
+  record as an in-kind gift at market value; the buyer's payment appears on
+  the buyer's record as an auction purchase, separate from donations.
+  - **Email thank-you letters** sends each donor a thank-you with a link to a
+    PDF acknowledgment letter on DHA letterhead for their tax records. The
+    letter describes the item but, as the IRS requires, doesn't state its
+    value, and it notes that donated services aren't deductible.
+  - **Email buyer receipts** sends each winning bidder a PDF receipt showing
+    the amount paid, the item's fair market value, and the part that may be
+    deductible.
+  - **Download letters to print** makes the same PDFs for donors without an
+    email address.
+- **Do not email, call, or mail.** Three separate boxes on each person's
+  record. Ticking one asks how they asked (phone, in person, mail, and so on)
+  and keeps a dated history. Anyone who clicks **Unsubscribe** in an email is
+  opted out automatically.
+- **Unsubscribed tab.** Everyone who opted out of anything, with their phone
+  number, giving history, and call notes, for reactivation calls.
+  **Resubscribe** puts someone back on the list and requires a note saying
+  how they agreed.
 - **Download for Excel.** Downloads the donor list (all donors, a filtered
   list, or only the ones you've ticked) as a spreadsheet.
-- **Add, edit, or delete** donors and gifts, and mark anyone **Do not email**.
+- **Add, edit, or delete** donors and gifts.
 - **Volunteers.** Tick **Volunteer** on anyone's record (or click **+ Add
   volunteer** on the Donors page) to log the time they give: date, hours,
   activity, and notes. Their page shows total hours and hours this year, and
@@ -125,13 +163,19 @@ Email sending**.
 - **After each Giving Day**, download the donation report from the North Texas
   Giving Day site and upload it on **Import**. New donors are added, returning
   donors get the new gift, and nothing is entered twice.
-- **Thank-yous:** open the Dashboard and click **Email thank-yous**. Check the
-  preview and send.
+- **Thank-yous:** open the Dashboard. Click **Email thank-yous** to send them
+  from the CRM, or, after mailing letters or calling, tick those gifts under
+  **Needs a thank-you** and click **Mark thanked**.
 - **Renewals:** before the next Giving Day, use **Email renewal request** on the
   Dashboard. You can also filter the Donors page, for example to "Gave in 2022"
   plus "No gift since 2023," tick the donors, and click **Email selected**.
-- **Someone asks to stop receiving emails:** open their record, click **Edit
-  details**, and tick **Do not email**. They'll be skipped from then on.
+- **Someone asks to stop receiving emails, calls, or mail:** open their record
+  and tick the box under **Contact preferences**. Choose how they asked and
+  click **Save**. Emails skip them from then on.
+- **After an auction:** export the item list from OneCause, choose **Auction
+  or in-kind items** on **Import**, check the column matches, and import. Then
+  open **In-Kind**, tick the items, and click **Email thank-you letters** and
+  **Email buyer receipts**.
 - **One-off gifts by check or cash:** open the donor (or click **+ Add
   donor**), then click **+ Record a gift**.
 - **Volunteer time:** open the volunteer (or click **+ Add volunteer**), then
@@ -146,8 +190,9 @@ uploading a spreadsheet.
 
 ## Rebuilding the database from scratch (only if ever needed)
 
-1. In a new Supabase project, run `donor-crm/supabase/setup.sql` and then
-   `donor-crm/supabase/finish-setup.sql` in the SQL Editor.
+1. In a new Supabase project, run `donor-crm/supabase/setup.sql`, then
+   `donor-crm/supabase/finish-setup.sql`, then
+   `donor-crm/supabase/add-thankyous-optouts-inkind.sql` in the SQL Editor.
 2. Open **Edge Functions → Deploy a new function → Via Editor**. Name it
    `send-email`, paste the contents of
    `donor-crm/supabase/functions/send-email/index.ts`, and click **Deploy**.
@@ -167,3 +212,9 @@ uploading a spreadsheet.
   Volunteer checkbox and the volunteer time log to the existing database. It
   is safe to run more than once. A fresh database built from `setup.sql`
   already includes it.
+- **Thank-yous, contact preferences, and in-kind items (November 2026):**
+  `donor-crm/supabase/add-thankyous-optouts-inkind.sql` adds thank-you
+  tracking on each gift, the Do not call and Do not mail boxes with their
+  history, call notes, the In-Kind tab, the PDF letters, and the volunteer,
+  people, and auction imports. It is safe to run more than once. Run it after
+  `setup.sql` and `finish-setup.sql` when building a fresh database.
