@@ -51,6 +51,7 @@ begin
   if new.is_package then
     new.donor_contact_id := null;
     new.package_id := null;
+    new.onecause_key := null; -- its donated item is added on its own again, inside it
   elsif new.package_id is not null then
     if not exists (select 1 from public.inkind_items where id = new.package_id and is_package) then
       raise exception 'That package was not found.';
@@ -172,10 +173,11 @@ $$;
 
 
 -- ---------------------------------------------------------------------------
--- Finding the person on an imported row. A business row matches the same
--- business first; failing that, a row with no first name (a business, or just
--- an email) belongs to whoever already has that email, so a donor listed under
--- a business-sounding name isn't added a second time.
+-- Finding the person on an imported row. Whether a donor name is a person or a
+-- business is a guess, so before adding anyone the other reading is checked
+-- too: a business row matches the same business, then the one person with that
+-- name ("Min Park"), then anyone with its email; a person row matches a
+-- business with exactly that name ("Pinstack Bowl") before the usual matching.
 -- ---------------------------------------------------------------------------
 create or replace function public.import_contact(r jsonb, out contact_id uuid, out created boolean)
 language plpgsql
@@ -183,21 +185,38 @@ set search_path = public
 as $$
 declare
   v_email text := nullif(lower(trim(coalesce(r ->> 'email', ''))), '');
+  v_first text := coalesce(trim(r ->> 'first_name'), '');
+  v_last text := coalesce(trim(r ->> 'last_name'), '');
+  v_pf text;
+  v_pl text;
 begin
   created := false;
-  -- a business: the same business by name or email first
-  if coalesce(trim(r ->> 'first_name'), '') = '' and coalesce(trim(r ->> 'last_name'), '') <> '' then
+  if v_first = '' and v_last <> '' then
+    -- a business: the same business by name or email
     select c.id into contact_id from public.contacts c
     where not c.is_anonymous and c.first_name = ''
-      and (regexp_replace(lower(c.last_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(r ->> 'last_name'), '[^a-z0-9]', '', 'g')
+      and (regexp_replace(lower(c.last_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(v_last), '[^a-z0-9]', '', 'g')
            or public.contact_has_email(c, v_email))
     order by c.created_at limit 1;
     if contact_id is not null then
       return;
     end if;
+    -- a person whose name was read as a business ("Min Park"): the one person with that name
+    if v_last ~ '\s' then
+      v_pf := regexp_replace(v_last, '\s+\S+$', '');
+      v_pl := regexp_replace(v_last, '^.*\s', '');
+      select min(c.id::text)::uuid into contact_id from public.contacts c
+      where not c.is_anonymous and c.first_name <> ''
+        and public.first_compat(c.first_name, v_pf) and public.last_compat(c.last_name, v_pl)
+        and (v_email is null or public.contact_has_email(c, v_email))
+      having count(*) = 1;
+      if contact_id is not null then
+        return;
+      end if;
+    end if;
   end if;
   -- no first name (a business not found above, or just an email): whoever has that email
-  if coalesce(trim(r ->> 'first_name'), '') = '' and v_email is not null then
+  if v_first = '' and v_email is not null then
     select c.id into contact_id from public.contacts c
     where not c.is_anonymous and lower(c.email) = v_email
     order by c.created_at limit 1;
@@ -206,6 +225,16 @@ begin
       where not c.is_anonymous and public.contact_has_email(c, v_email)
       order by c.created_at limit 1;
     end if;
+    if contact_id is not null then
+      return;
+    end if;
+  end if;
+  -- a business whose name was read as a person's ("Pinstack Bowl"): the business with that exact name
+  if v_first <> '' and v_last <> '' then
+    select c.id into contact_id from public.contacts c
+    where not c.is_anonymous and c.first_name = ''
+      and regexp_replace(lower(c.last_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(v_first || v_last), '[^a-z0-9]', '', 'g')
+    order by c.created_at limit 1;
     if contact_id is not null then
       return;
     end if;

@@ -63,14 +63,17 @@ export function isOrganizationName(n: string): boolean {
   if (ORG_STRONG.test(n) || BUSINESS.test(n)) return true;
   const weak = (n.match(ORG_WEAK) ?? []).length;
   if (weak === 0) return false;
-  // "Mary Ann Church", "Robert E. House", "Dr. Mark Church", "Maria Arena", "John & Jane Waters"
   const words = n.replace(/^(dr|mr|mrs|ms|miss)\.?\s+/i, "").split(" ");
+  // Two words are a person ("Min Park", "Olivia Waters") unless both are business signs ("Dallas Wings").
+  // A wrong guess here doesn't add anyone twice: the import checks the other reading before adding a contact.
+  if (words.length <= 2) return weak >= 2;
+  // Longer names with a business word are a business ("Main Street Market") unless they read like a
+  // person ("Mary Ann Church", "Robert E. House", "Dr. Mark Church", "John & Jane Waters")
   const personLike =
     /^(dr|mr|mrs|ms|miss)\.?\s/i.test(n) ||
-    (words.length > 2 && words.slice(1, -1).some((w) => /^[a-z]\.?$/i.test(w))) ||
+    words.slice(1, -1).some((w) => /^[a-z]\.?$/i.test(w)) ||
     FIRST_NAMES.has(words[0].toLowerCase().replace(/[^a-z]/g, "")) ||
     /&|\band\b/i.test(n);
-  // otherwise a business word makes it a business ("Main Street Market", "Dallas Wings")
   return !personLike;
 }
 
