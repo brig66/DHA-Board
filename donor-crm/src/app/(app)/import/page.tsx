@@ -8,6 +8,8 @@ import { downloadCsv, money, shortDate } from "@/lib/format";
 import { looksLikeAttendeeList, mapAttendees, mapRows, type AttendeeRow, type MapResult } from "@/lib/importMapper";
 import { templateFor, type ImportKind, type RawRow } from "@/lib/importColumns";
 import ColumnImport from "@/components/ColumnImport";
+import OneCauseImport from "@/components/OneCauseImport";
+import { detectOneCause } from "@/lib/onecause";
 
 type ImportSummary = {
   gifts_added: number;
@@ -54,7 +56,7 @@ const KINDS: { kind: Kind; title: string; text: string }[] = [
   { kind: "gifts", title: "Gifts or event attendees", text: "Giving Day and donation website exports, gift spreadsheets, attendee lists" },
   { kind: "volunteers", title: "Volunteers and hours", text: "A volunteer list, with or without dates and hours worked" },
   { kind: "people", title: "People list", text: "Board members, contact updates, people who asked not to be emailed, called or mailed" },
-  { kind: "auction", title: "Auction or in-kind items", text: "A OneCause item export, or any list of donated items, values and winners" },
+  { kind: "auction", title: "Auction or in-kind items", text: "OneCause’s Auction Proceeds and Items reports (both at once), or any list of donated items" },
 ];
 
 async function readFile(file: File): Promise<Record<string, unknown>[]> {
@@ -76,6 +78,8 @@ async function readFile(file: File): Promise<Record<string, unknown>[]> {
 export default function ImportPage() {
   const [kind, setKind] = useState<Kind>("gifts");
   const [columnFile, setColumnFile] = useState<{ name: string; raw: RawRow[]; key: number } | null>(null);
+  type OcFile = { name: string; raw: RawRow[] };
+  const [oneCause, setOneCause] = useState<{ proceeds: OcFile | null; items: OcFile | null; key: number } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [mapped, setMapped] = useState<MapResult | null>(null);
   const [label, setLabel] = useState("");
@@ -108,8 +112,37 @@ export default function ImportPage() {
     setAttendeeFiles(null);
     setAttendeeSummary(null);
     setColumnFile(null);
+    setOneCause(null);
     setError(null);
     if (!chosen.length) return;
+    if (as === "auction") {
+      try {
+        const sheets = await Promise.all(chosen.map(async (f) => ({ name: f.name, raw: await readFile(f) })));
+        const kinds = sheets.map((x) => detectOneCause(x.raw));
+        if (kinds.includes("bids"))
+          return setError(
+            "That's OneCause's bid history (every bid, not just the winners). In OneCause, export Reports → Auction Proceeds instead, and Reports → Items Report."
+          );
+        if (kinds.some((k) => k === "proceeds" || k === "items")) {
+          if (kinds.some((k) => k === null))
+            return setError("Upload the OneCause reports on their own, without other spreadsheets.");
+          const proceeds = sheets.find((_, i) => kinds[i] === "proceeds") ?? null;
+          const items = sheets.find((_, i) => kinds[i] === "items") ?? null;
+          if (kinds.filter((k) => k === "proceeds").length > 1 || kinds.filter((k) => k === "items").length > 1)
+            return setError("Choose one Auction Proceeds report and one Items Report.");
+          await loadEvents();
+          setOneCause({ proceeds, items, key: Date.now() });
+          return;
+        }
+        if (sheets.length > 1) return setError("For this kind of import, please upload one file at a time.");
+        if (!sheets[0].raw.length) return setError(`"${sheets[0].name}" has no rows under its headings.`);
+        await loadEvents();
+        setColumnFile({ name: sheets[0].name, raw: sheets[0].raw, key: Date.now() });
+      } catch (e) {
+        setError((e as Error).message);
+      }
+      return;
+    }
     if (as !== "gifts") {
       if (chosen.length > 1) {
         setError("For this kind of import, please upload one file at a time.");
@@ -118,7 +151,6 @@ export default function ImportPage() {
       try {
         const raw = await readFile(chosen[0]);
         if (!raw.length) return setError(`"${chosen[0].name}" has no rows under its headings.`);
-        if (as === "auction") await loadEvents();
         setColumnFile({ name: chosen[0].name, raw, key: Date.now() });
       } catch (e) {
         setError((e as Error).message);
@@ -312,6 +344,22 @@ export default function ImportPage() {
         </div>
         {error && <p className="text-sm text-coral-600">{error}</p>}
       </section>
+
+      {kind === "auction" && !oneCause && !columnFile && (
+        <section className="card p-5 text-sm">
+          <h2 className="font-display text-lg font-semibold">Importing from OneCause</h2>
+          <p className="mt-1">Choose both OneCause reports at once (hold Command or Ctrl to pick two files):</p>
+          <ul className="mt-2 list-disc pl-5">
+            <li><strong>Auction Proceeds</strong>, with the Item Donor, Payment Status, Address, City, State and Zip columns added. It has the packages, what they sold for and who won them.</li>
+            <li><strong>Items Report</strong>, with the Lot Number, Donor Contact and Description columns added. It has each donated item and its donor.</li>
+          </ul>
+          <p className="muted mt-2">Any other spreadsheet of donated items works too; you&rsquo;ll match its columns on the next screen.</p>
+        </section>
+      )}
+
+      {oneCause && kind === "auction" && (
+        <OneCauseImport key={oneCause.key} proceeds={oneCause.proceeds} items={oneCause.items} knownEvents={knownEvents} />
+      )}
 
       {columnFile && kind !== "gifts" && (
         <ColumnImport

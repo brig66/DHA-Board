@@ -42,7 +42,8 @@ its own sign-ins, and its own database.
     when someone renews by check or phone.
   - **Giving by event:** totals for each event. **Total raised** counts each
     auction item once: at what it sold for, or at its market value if it
-    didn't sell.
+    didn't sell. Items sold together in a package count once, at the
+    package's price.
 - **Import.** Upload a .csv or .xlsx file and choose what's in it:
   - **Gifts or event attendees:** North Texas Giving Day exports, the
     donation website's export, any gift spreadsheet, or an attendee list.
@@ -51,8 +52,15 @@ its own sign-ins, and its own database.
     hours worked.
   - **People list:** board members, contact updates, and people who asked not
     to be emailed, called, or mailed.
-  - **Auction or in-kind items:** a OneCause item export or any list of
-    donated items, values, and winners.
+  - **Auction or in-kind items:** OneCause's **Auction Proceeds** and
+    **Items Report** exports chosen together, or any list of donated items,
+    values, and winners. The OneCause import creates the packages with their
+    winning bidders, the donated items with their donors, and links each item
+    to the package it sold in. Items it can't place for certain are listed for
+    staff to choose before importing. Importing the same files again updates
+    buyers, prices, values and donors from OneCause, and keeps what staff
+    changed in the CRM (names, descriptions, events, packages, notes). The
+    import is saved in small parts so no single save times out.
   - For volunteers, people, and auction items, the CRM shows which column it
     matched to each field, and staff can change any match before importing.
   - Uploading the same file twice is harmless: gifts and hours already in the
@@ -62,6 +70,16 @@ its own sign-ins, and its own database.
   value, what it sold for, and who bought it. Each item appears on its donor's
   record as an in-kind gift at market value; the buyer's payment appears on
   the buyer's record as an auction purchase, separate from donations.
+  - **Packages:** an auction lot made of several donations is a package. The
+    package holds the lot number, value, buyer, and price; each donated item
+    inside it keeps its own donor and value. Donor letters name the package
+    their gift was part of, and the buyer gets one receipt for the package.
+  - A package OneCause lists with no market value shows **Needs a value**, and
+    its receipt can't be sent until staff enter one.
+  - The database enforces that a package never has a donor and an item inside
+    a package never has its own buyer or price, so each sale counts once.
+  - Letters for events whose IRS acknowledgment deadline has passed
+    (October 15 of the following year) show a warning before sending.
   - **Email thank-you letters** sends each donor a thank-you with a link to a
     PDF acknowledgment letter on DHA letterhead for their tax records. The
     letter describes the item but, as the IRS requires, doesn't state its
@@ -172,10 +190,12 @@ Email sending**.
 - **Someone asks to stop receiving emails, calls, or mail:** open their record
   and tick the box under **Contact preferences**. Choose how they asked and
   click **Save**. Emails skip them from then on.
-- **After an auction:** export the item list from OneCause, choose **Auction
-  or in-kind items** on **Import**, check the column matches, and import. Then
-  open **In-Kind**, tick the items, and click **Email thank-you letters** and
-  **Email buyer receipts**.
+- **After an auction:** in OneCause, export **Auction Proceeds** and **Items
+  Report** as CSV. On **Import**, choose **Auction or in-kind items** and pick
+  both files at once. Name the event, check any items it asks about, and
+  import. Then open **In-Kind**, add a value to any package marked **Needs a
+  value**, tick the items, and click **Email thank-you letters** and **Email
+  buyer receipts**.
 - **One-off gifts by check or cash:** open the donor (or click **+ Add
   donor**), then click **+ Record a gift**.
 - **Volunteer time:** open the volunteer (or click **+ Add volunteer**), then
@@ -192,7 +212,8 @@ uploading a spreadsheet.
 
 1. In a new Supabase project, run `donor-crm/supabase/setup.sql`, then
    `donor-crm/supabase/finish-setup.sql`, then
-   `donor-crm/supabase/add-thankyous-optouts-inkind.sql` in the SQL Editor.
+   `donor-crm/supabase/add-thankyous-optouts-inkind.sql`, then
+   `donor-crm/supabase/add-auction-packages.sql` in the SQL Editor.
 2. Open **Edge Functions → Deploy a new function → Via Editor**. Name it
    `send-email`, paste the contents of
    `donor-crm/supabase/functions/send-email/index.ts`, and click **Deploy**.
@@ -218,3 +239,8 @@ uploading a spreadsheet.
   history, call notes, the In-Kind tab, the PDF letters, and the volunteer,
   people, and auction imports. It is safe to run more than once. Run it after
   `setup.sql` and `finish-setup.sql` when building a fresh database.
+- **Auction packages and OneCause import (November 2026):**
+  `donor-crm/supabase/add-auction-packages.sql` adds auction packages, links
+  donated items to the package they sold in, and adds the two-report OneCause
+  import. It is safe to run more than once. Run it after
+  `add-thankyous-optouts-inkind.sql`.

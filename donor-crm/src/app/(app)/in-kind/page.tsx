@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { fetchAll, fetchAllContacts } from "@/lib/data";
 import { downloadCsv, fullName, money, shortDate } from "@/lib/format";
 import { todayLocal } from "@/lib/thanks";
+import { ackDeadlinePassed } from "@/lib/onecause";
 import ContactPicker, { type PickerContact } from "@/components/ContactPicker";
 import EmailPreview from "@/components/EmailPreview";
 import {
@@ -41,12 +42,14 @@ type Draft = {
   sold_amount: string;
   sold_date: string;
   notes: string;
+  is_package: boolean;
+  package_id: string | null;
 };
 
 const blank = (event: string): Draft => ({
   id: null, event_name: event, item_number: "", title: "", description: "", sale_type: "Silent auction", is_service: false,
   donor_contact_id: null, fair_market_value: "", received_date: todayLocal(), buyer_contact_id: null, bidder_number: "",
-  sold_amount: "", sold_date: "", notes: "",
+  sold_amount: "", sold_date: "", notes: "", is_package: false, package_id: null,
 });
 
 const toDraft = (i: InkindItem): Draft => ({
@@ -55,6 +58,7 @@ const toDraft = (i: InkindItem): Draft => ({
   fair_market_value: i.fair_market_value === null ? "" : String(Number(i.fair_market_value)), received_date: i.received_date ?? "",
   buyer_contact_id: i.buyer_contact_id, bidder_number: i.bidder_number ?? "",
   sold_amount: i.sold_amount === null ? "" : String(Number(i.sold_amount)), sold_date: i.sold_date ?? "", notes: i.notes ?? "",
+  is_package: i.is_package, package_id: i.package_id,
 });
 
 const amountOrNull = (s: string) => {
@@ -85,6 +89,7 @@ function InKind() {
   const [error, setError] = useState<string | null>(null);
   const [event, setEvent] = useState<string>("");
   const [search, setSearch] = useState("");
+  const [show, setShow] = useState<"all" | "sold" | "donated">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [form, setForm] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -125,6 +130,13 @@ function InKind() {
   }, [load]);
 
   const byId = useMemo(() => new Map(contacts.map((c) => [c.id, c])), [contacts]);
+  const itemById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+  const contents = useMemo(() => {
+    const m = new Map<string, InkindItem[]>();
+    for (const i of items) if (i.package_id) m.set(i.package_id, [...(m.get(i.package_id) ?? []), i]);
+    return m;
+  }, [items]);
+  const pkgOf = (i: InkindItem) => (i.package_id ? itemById.get(i.package_id) : undefined);
 
   // events, most recently active first
   const events = useMemo(() => {
@@ -158,24 +170,38 @@ function InKind() {
 
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
+    // packages are followed by the donated items inside them
+    const sortKey = (i: InkindItem) => {
+      const p = i.package_id ? itemById.get(i.package_id) : undefined;
+      const head = p ?? i;
+      return [head.sale_type === "Live auction" ? "0" : "1", head.item_number ?? "", head.title, p ? "1" : "0", i.title];
+    };
     return items
       .filter((i) => !event || i.event_name === event)
+      .filter((i) => (show === "sold" ? i.sold_amount !== null || !!i.buyer_contact_id : show === "donated" ? !i.is_package : true))
       .filter((i) => {
         if (!q) return true;
         const donor = i.donor_contact_id ? byId.get(i.donor_contact_id) : undefined;
         const buyer = i.buyer_contact_id ? byId.get(i.buyer_contact_id) : undefined;
-        return [i.title, i.description, i.item_number, donor && fullName(donor), donor?.organization, buyer && fullName(buyer)]
+        const p = i.package_id ? itemById.get(i.package_id) : undefined;
+        return [i.title, i.description, i.item_number, donor && fullName(donor), donor?.organization, buyer && fullName(buyer), p?.title]
           .join(" ").toLowerCase().includes(q);
       })
-      .sort((a, b) =>
-        (a.item_number ?? "").localeCompare(b.item_number ?? "", undefined, { numeric: true }) || a.title.localeCompare(b.title)
-      );
-  }, [items, event, search, byId]);
+      .sort((a, b) => {
+        const ka = sortKey(a), kb = sortKey(b);
+        for (let n = 0; n < ka.length; n++) {
+          const c = ka[n].localeCompare(kb[n], undefined, { numeric: true });
+          if (c) return c;
+        }
+        return 0;
+      });
+  }, [items, event, search, byId, itemById, show]);
 
   const totals = useMemo(() => {
     const withDonor = shown.filter((i) => i.donor_contact_id);
     return {
-      value: shown.reduce((s, i) => s + Number(i.fair_market_value ?? 0), 0),
+      // market value of what was donated (a package's value is its items' value again)
+      value: shown.filter((i) => !i.is_package).reduce((s, i) => s + Number(i.fair_market_value ?? 0), 0),
       sold: shown.reduce((s, i) => s + Number(i.sold_amount ?? 0), 0),
       soldCount: shown.filter((i) => i.sold_amount !== null).length,
       withDonor: withDonor.length,
@@ -196,7 +222,16 @@ function InKind() {
   function groups(kind: LetterKind, list: InkindItem[]): { groups: Group[]; left: InkindItem[] } {
     const map = new Map<string, Group>();
     const left: InkindItem[] = [];
+    // A ticked package stands for the donated items in it (for letters); a ticked item in a package
+    // stands for its package (for receipts). Each counts once.
+    const seen = new Set<string>();
+    const expanded: InkindItem[] = [];
     for (const i of list) {
+      const xs = kind === "inkind_ack" ? (i.is_package ? contents.get(i.id) ?? [] : [i]) : [pkgOf(i) ?? i];
+      for (const x of xs) if (!seen.has(x.id)) { seen.add(x.id); expanded.push(x); }
+    }
+    for (const i of expanded) {
+      if (kind === "inkind_ack" ? i.is_package : !!i.package_id) continue;
       const cid = kind === "inkind_ack" ? i.donor_contact_id : i.buyer_contact_id;
       const okReceipt = kind === "inkind_ack" || (i.sold_amount !== null && i.fair_market_value !== null);
       const c = cid ? byId.get(cid) : undefined;
@@ -221,7 +256,16 @@ function InKind() {
       first_name: g.contact.first_name || g.contact.organization || g.contact.last_name || "Friend",
       items: itemList(g.items.map((i) => i.title)),
       event: evs.length === 1 ? evs[0] : org,
-      raised: kind === "inkind_ack" ? raisedSentence(g.items.reduce((s, i) => s + Number(i.sold_amount ?? 0), 0)) : "",
+      raised:
+        kind === "inkind_ack"
+          ? raisedSentence(
+              g.items.reduce((s, i) => s + Number(i.sold_amount ?? 0), 0),
+              Array.from(new Set(g.items.map((i) => i.package_id).filter(Boolean) as string[]))
+                .map((id) => itemById.get(id))
+                .filter((p): p is InkindItem => !!p && p.sold_amount !== null)
+                .map((p) => ({ title: p.title, sold: Number(p.sold_amount) }))
+            )
+          : "",
     };
   }
 
@@ -352,7 +396,9 @@ function InKind() {
 
   async function markThanked() {
     if (!thank) return;
-    const ids = selectedItems.map((i) => i.donation_id).filter(Boolean) as string[];
+    const ids = Array.from(
+      new Set(selectedItems.flatMap((i) => (i.is_package ? contents.get(i.id) ?? [] : [i])).map((i) => i.donation_id).filter(Boolean) as string[])
+    );
     if (!ids.length) return setError("None of these items has a donor gift to mark.");
     const { error } = await createClient().rpc("mark_gifts_thanked", { p_gift_ids: ids, p_method: thank.method, p_on: thank.on });
     if (error) return setError(error.message);
@@ -388,6 +434,8 @@ function InKind() {
         sold_amount: sold,
         sold_date: form.sold_date || null,
         notes: form.notes,
+        is_package: form.is_package,
+        package_id: form.is_package ? null : form.package_id,
       },
     });
     setSaving(false);
@@ -400,7 +448,15 @@ function InKind() {
 
   async function remove() {
     if (!form?.id) return;
-    if (!confirm(`Delete "${form.title}"? The donor's matching in-kind gift is deleted too. Letters already sent are kept.`)) return;
+    const inside = contents.get(form.id)?.length ?? 0;
+    if (
+      !confirm(
+        form.is_package
+          ? `Delete the package "${form.title}"? The ${inside} donated item${inside === 1 ? "" : "s"} in it stay on the In-Kind tab. Receipts already sent are kept.`
+          : `Delete "${form.title}"? The donor's matching in-kind gift is deleted too. Letters already sent are kept.`
+      )
+    )
+      return;
     const { error } = await createClient().rpc("delete_inkind_item", { p_item: form.id });
     if (error) return setError(error.message);
     setForm(null);
@@ -411,13 +467,13 @@ function InKind() {
   function exportShown() {
     downloadCsv(
       `DHA in-kind items ${event || "all events"} ${todayLocal()}.csv`,
-      ["Event", "Item #", "Item", "Description", "Type", "Service", "Donor", "Donor Email", "Market Value", "Received",
+      ["Event", "Item #", "Item", "Package?", "In Package", "Description", "Type", "Service", "Donor", "Donor Email", "Market Value", "Received",
         "Buyer", "Buyer Email", "Bidder #", "Sold For", "Thank-you", "Receipt Emailed"],
       shown.map((i) => {
         const d = i.donor_contact_id ? byId.get(i.donor_contact_id) : undefined;
         const b = i.buyer_contact_id ? byId.get(i.buyer_contact_id) : undefined;
         return [
-          i.event_name, i.item_number, i.title, i.description, i.sale_type, i.is_service ? "Yes" : "",
+          i.event_name, i.item_number, i.title, i.is_package ? "Package" : "", pkgOf(i)?.title ?? "", i.description, i.sale_type, i.is_service ? "Yes" : "",
           d ? fullName(d) : "", d?.email, i.fair_market_value === null ? "" : Number(i.fair_market_value).toFixed(2), i.received_date,
           b ? fullName(b) : "", b?.email, i.bidder_number, i.sold_amount === null ? "" : Number(i.sold_amount).toFixed(2),
           thankedLabel(i) ?? "", i.buyer_receipt_sent_at ? i.buyer_receipt_sent_at.slice(0, 10) : "",
@@ -448,9 +504,10 @@ function InKind() {
         <div className="max-w-3xl">
           <h1 className="font-display text-2xl font-semibold">In-kind and auction items</h1>
           <p className="muted text-sm">
-            Everything donated that isn&rsquo;t cash: auction items, gift cards, services and supplies. Each item counts as
-            an in-kind gift from its donor at its market value. Add the winning bidder and price after the auction, then
-            email donors a thank-you with a PDF letter for their tax records. To bring in a OneCause export, use{" "}
+            Everything donated that isn&rsquo;t cash: auction items, gift cards, services and supplies. Each donated item
+            counts as an in-kind gift from its donor at its market value. Items bundled for the auction sit inside a{" "}
+            <strong>package</strong>, which records the winning bidder and price. Email donors a thank-you with a PDF letter,
+            and buyers a receipt. To bring in OneCause&rsquo;s reports, use{" "}
             <Link href="/import" className="font-semibold text-teal-700">Import</Link>.
           </p>
         </div>
@@ -469,8 +526,15 @@ function InKind() {
 
       {form && (
         <div ref={formRef} className="card p-5">
-          <h2 className="font-display text-lg font-semibold">{form.id ? "Edit item" : "Add an item"}</h2>
+          <h2 className="font-display text-lg font-semibold">
+            {form.id ? (form.is_package ? "Edit package" : "Edit item") : form.is_package ? "Add a package" : "Add an item"}
+          </h2>
           <form onSubmit={save} className="mt-3 grid gap-4 md:grid-cols-6">
+            <label className="flex items-center gap-2 text-sm md:col-span-6">
+              <input type="checkbox" checked={form.is_package}
+                onChange={(e) => setForm({ ...form, is_package: e.target.checked, package_id: null, donor_contact_id: e.target.checked ? null : form.donor_contact_id })} />
+              This is an auction package made up of several donated items (each item&rsquo;s donor is recorded on the item)
+            </label>
             <div className="md:col-span-3">
               <label className="label">Event</label>
               <input list="inkind-events" className="input mt-1" placeholder="e.g. Love That Smile 2026" value={form.event_name}
@@ -488,27 +552,45 @@ function InKind() {
                 {SALE_TYPES.map((t) => <option key={t}>{t}</option>)}
               </select>
             </div>
-            <div className="md:col-span-4">
+            <div className={form.is_package ? "md:col-span-6" : "md:col-span-4"}>
               <label className="label">What it is</label>
               <input required className="input mt-1" placeholder="e.g. Teeth whitening package" value={form.title}
                 onChange={(e) => setForm({ ...form, title: e.target.value })} />
             </div>
-            <label className="flex items-end gap-2 pb-2 text-sm md:col-span-2">
+            {!form.is_package && <label className="flex items-end gap-2 pb-2 text-sm md:col-span-2">
               <input type="checkbox" checked={form.is_service} onChange={(e) => setForm({ ...form, is_service: e.target.checked })} />
               A service (not tax-deductible for the donor)
-            </label>
+            </label>}
             <div className="md:col-span-6">
               <label className="label">Description (appears on the thank-you letter)</label>
               <input className="input mt-1" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </div>
 
-            <div className="md:col-span-3">
-              <ContactPicker label="Donated by" contacts={pickerContacts} value={form.donor_contact_id}
-                onChange={(id) => setForm({ ...form, donor_contact_id: id })}
-                onCreated={(c) => setContacts((cs) => [...cs, c as ContactSummary])} />
-            </div>
+            {form.is_package ? (
+              <div className="md:col-span-3 text-sm">
+                <span className="label">Donated items in this package</span>
+                {(form.id ? contents.get(form.id) ?? [] : []).length ? (
+                  <ul className="mt-1 list-disc pl-5">
+                    {(contents.get(form.id!) ?? []).map((c) => (
+                      <li key={c.id}>
+                        {c.title}
+                        {c.donor_contact_id && byId.get(c.donor_contact_id) && <span className="muted"> · {fullName(byId.get(c.donor_contact_id)!)}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted mt-1">None yet. Open a donated item and choose this package under &ldquo;Part of package.&rdquo;</p>
+                )}
+              </div>
+            ) : (
+              <div className="md:col-span-3">
+                <ContactPicker label="Donated by" contacts={pickerContacts} value={form.donor_contact_id}
+                  onChange={(id) => setForm({ ...form, donor_contact_id: id })}
+                  onCreated={(c) => setContacts((cs) => [...cs, c as ContactSummary])} />
+              </div>
+            )}
             <div>
-              <label className="label">Market value ($)</label>
+              <label className="label">{form.is_package ? "Package value ($)" : "Market value ($)"}</label>
               <input inputMode="decimal" className="input mt-1" value={form.fair_market_value}
                 onChange={(e) => setForm({ ...form, fair_market_value: e.target.value })} />
             </div>
@@ -517,6 +599,29 @@ function InKind() {
               <input type="date" className="input mt-1" value={form.received_date} onChange={(e) => setForm({ ...form, received_date: e.target.value })} />
             </div>
 
+            {!form.is_package && (
+              <div className="md:col-span-6">
+                <label className="label">Part of package</label>
+                <select className="input mt-1" value={form.package_id ?? ""} onChange={(e) => setForm({ ...form, package_id: e.target.value || null })}>
+                  <option value="">Not part of a package (sold, or given, on its own)</option>
+                  {items
+                    .filter((i) => i.is_package && i.id !== form.id && (!form.event_name.trim() || i.event_name === form.event_name.trim()))
+                    .sort((a, b) => (a.item_number ?? "").localeCompare(b.item_number ?? "", undefined, { numeric: true }))
+                    .map((i) => (
+                      <option key={i.id} value={i.id}>
+                        {i.event_name} · {i.item_number ? `Lot ${i.item_number} · ` : ""}{i.title}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
+
+            {form.package_id ? (
+              <p className="muted text-sm md:col-span-6">
+                Sold as part of the package, so the buyer and price are recorded on the package.
+              </p>
+            ) : (
+            <>
             <div className="md:col-span-3">
               <ContactPicker label="Won by (buyer)" contacts={pickerContacts} value={form.buyer_contact_id}
                 onChange={(id) => setForm({ ...form, buyer_contact_id: id })}
@@ -534,14 +639,18 @@ function InKind() {
               <label className="label">Date sold</label>
               <input type="date" className="input mt-1" value={form.sold_date} onChange={(e) => setForm({ ...form, sold_date: e.target.value })} />
             </div>
+            </>
+            )}
             <div className="md:col-span-6">
               <label className="label">Notes (staff only)</label>
               <input className="input mt-1" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
             </div>
             <div className="flex flex-wrap gap-2 md:col-span-6">
-              <button className="btn btn-primary" disabled={saving}>{saving ? "Saving…" : form.id ? "Save item" : "Add item"}</button>
+              <button className="btn btn-primary" disabled={saving}>
+                {saving ? "Saving…" : form.id ? (form.is_package ? "Save package" : "Save item") : form.is_package ? "Add package" : "Add item"}
+              </button>
               <button type="button" className="btn btn-secondary" onClick={() => setForm(null)}>Cancel</button>
-              {form.id && <button type="button" className="btn btn-danger ml-auto" onClick={remove}>Delete item</button>}
+              {form.id && <button type="button" className="btn btn-danger ml-auto" onClick={remove}>{form.is_package ? "Delete package" : "Delete item"}</button>}
             </div>
           </form>
         </div>
@@ -555,9 +664,17 @@ function InKind() {
             {events.map((e) => <option key={e}>{e}</option>)}
           </select>
         </div>
-        <div className="md:col-span-3">
+        <div>
+          <label className="label">Show</label>
+          <select className="input mt-1" value={show} onChange={(e) => { setShow(e.target.value as typeof show); setSelected(new Set()); }}>
+            <option value="all">Everything</option>
+            <option value="sold">What sold (for buyer receipts)</option>
+            <option value="donated">Donated items (for donor letters)</option>
+          </select>
+        </div>
+        <div className="md:col-span-2">
           <label className="label">Search</label>
-          <input className="input mt-1" placeholder="Item, donor or buyer…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="input mt-1" placeholder="Item, package, donor or buyer…" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <div className="flex items-end">
           <button className="btn btn-secondary w-full" onClick={exportShown}>Download for Excel</button>
@@ -565,7 +682,7 @@ function InKind() {
       </div>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <Tile label="Items" value={shown.length.toLocaleString()} />
+        <Tile label="Donated items" value={shown.filter((i) => !i.is_package).length.toLocaleString()} />
         <Tile label="Market value" value={money(totals.value)} />
         <Tile label={`Sold (${totals.soldCount})`} value={money(totals.sold)} />
         <Tile label="Donors thanked" value={`${totals.thanked} of ${totals.withDonor}`} />
@@ -614,6 +731,23 @@ function InKind() {
               </span>
             )}
           </p>
+          {(() => {
+            const late = Array.from(
+              new Set(
+                composeInfo.groups
+                  .flatMap((g) => g.items)
+                  .filter((i) => ackDeadlinePassed(i.received_date ?? i.sold_date ?? (pkgOf(i)?.sold_date ?? null), todayLocal()))
+                  .map((i) => i.event_name)
+              )
+            );
+            return late.length ? (
+              <p className="mt-2 rounded-lg bg-[#fff4ea] p-2 text-sm text-[#7a4a12]">
+                Tax letters for {late.join(" and ")} arrive after the IRS deadline for those years&rsquo; tax returns, so donors
+                can&rsquo;t use them for taxes. Consider sending those donors a plain thank-you from the Email page instead, or
+                untick their items here.
+              </p>
+            ) : null;
+          })()}
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="flex flex-col gap-3">
               <div>
@@ -687,18 +821,26 @@ function InKind() {
                       }} />
                   </td>
                   <td className="max-w-xs">
-                    <button className="text-left font-semibold text-teal-700" onClick={() => { setForm(toDraft(i)); setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth" }), 50); }}>
-                      {i.item_number ? `#${i.item_number} ` : ""}{i.title}
+                    <button className={`text-left font-semibold text-teal-700 ${i.package_id ? "pl-4 font-normal" : ""}`} onClick={() => { setForm(toDraft(i)); setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth" }), 50); }}>
+                      {i.package_id ? "↳ " : ""}{i.item_number && !i.package_id ? `#${i.item_number} ` : ""}{i.title}
                     </button>
-                    {i.description && <div className="muted text-xs">{i.description}</div>}
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {i.sale_type && <span className="pill">{i.sale_type}</span>}
+                    {i.description && <div className={`muted text-xs ${i.package_id ? "pl-4" : ""}`}>{i.description.length > 140 ? `${i.description.slice(0, 140)}…` : i.description}</div>}
+                    {pkgOf(i) && !event && <div className="muted pl-4 text-xs">In package: {pkgOf(i)!.item_number ? `Lot ${pkgOf(i)!.item_number} · ` : ""}{pkgOf(i)!.title}</div>}
+                    <div className={`mt-1 flex flex-wrap gap-1 ${i.package_id ? "pl-4" : ""}`}>
+                      {i.is_package && <span className="pill pill-good">Package · {contents.get(i.id)?.length ?? 0} {(contents.get(i.id)?.length ?? 0) === 1 ? "item" : "items"}</span>}
+                      {i.sale_type && !i.package_id && <span className="pill">{i.sale_type}</span>}
                       {i.is_service && <span className="pill pill-warn">Service</span>}
                       {!event && <span className="muted text-xs">{i.event_name}</span>}
                     </div>
                   </td>
                   <td>
-                    {d ? <Link href={`/donors/${d.id}`} className="font-semibold text-teal-700">{fullName(d)}</Link> : <span className="muted">No donor</span>}
+                    {i.is_package ? (
+                      <span className="muted text-xs">{contents.get(i.id)?.length ? "See the items inside" : "No donated items added yet"}</span>
+                    ) : d ? (
+                      <Link href={`/donors/${d.id}`} className="font-semibold text-teal-700">{fullName(d)}</Link>
+                    ) : (
+                      <span className="muted">No donor</span>
+                    )}
                     {d?.organization && d.organization !== d.last_name && <div className="muted text-xs">{d.organization}</div>}
                   </td>
                   <td className="text-right">{i.fair_market_value === null ? <span className="muted">—</span> : money(i.fair_market_value)}</td>
@@ -711,6 +853,8 @@ function InKind() {
                           {i.bidder_number && <span className="muted"> · bidder {i.bidder_number}</span>}
                         </div>
                       </>
+                    ) : pkgOf(i) ? (
+                      <span className="muted text-xs">Sold in its package</span>
                     ) : (
                       <span className="muted">—</span>
                     )}
@@ -719,9 +863,17 @@ function InKind() {
                     {d ? (thanked ? <span className="pill pill-good">{thanked}</span> : <span className="pill pill-warn">Not yet</span>) : <span className="muted">—</span>}
                   </td>
                   <td className="text-sm">
-                    {i.sold_amount !== null && b
-                      ? i.buyer_receipt_sent_at ? `Emailed ${shortDate(i.buyer_receipt_sent_at)}` : <span className="muted">Not sent</span>
-                      : <span className="muted">—</span>}
+                    {i.sold_amount !== null && b ? (
+                      i.buyer_receipt_sent_at ? (
+                        `Emailed ${shortDate(i.buyer_receipt_sent_at)}`
+                      ) : i.fair_market_value === null ? (
+                        <span className="pill pill-warn" title="Add the market value before sending the receipt">Needs a value</span>
+                      ) : (
+                        <span className="muted">Not sent</span>
+                      )
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
                   </td>
                   <td className="whitespace-nowrap text-right text-xs">
                     {d && <button className="font-semibold text-teal-700" onClick={() => downloadLetters("inkind_ack", [i])}>Letter</button>}

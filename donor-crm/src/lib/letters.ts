@@ -16,7 +16,7 @@ export function defaultMessage(kind: LetterKind, org: string, signer: string, ti
   if (kind === "inkind_ack")
     return `Dear {{first_name}},
 
-Thank you for donating {{items}} to {{event}}. {{raised}}Gifts like yours help ${org} provide affordable dental care in our community.
+Thank you for donating {{items}} to {{event}}. {{raised}} Gifts like yours help ${org} provide affordable dental care in our community.
 
 Your acknowledgment letter for your tax records is ready to download:
 
@@ -49,13 +49,21 @@ export function itemList(titles: string[]): string {
 
 export type LetterVars = { first_name: string; items: string; event: string; raised: string };
 
-export function raisedSentence(soldTotal: number): string {
-  return soldTotal > 0 ? `Your donation raised ${money(soldTotal)} at the auction. ` : "";
+/** What the donor's gift raised: on its own, or as part of an auction package. */
+export function raisedSentence(soldTotal: number, packages: { title: string; sold: number }[] = []): string {
+  if (soldTotal > 0) return `Your donation raised ${money(soldTotal)} at the auction. `;
+  if (packages.length === 1) return `Your gift was part of \u201c${packages[0].title}\u201d, which raised ${money(packages[0].sold)} at the auction. `;
+  if (packages.length > 1) return `Your gifts were part of auction packages that raised ${money(packages.reduce((s, p) => s + p.sold, 0))}. `;
+  return "";
 }
 
 /** Fills {{…}} placeholders in a subject line (plain text). */
 export function fillText(text: string, v: LetterVars): string {
-  return text.replace(/\{\{\s*(first_name|items|event|raised)\s*\}\}/g, (_m, k: keyof LetterVars) => v[k]).replace(/\{\{\s*letter_button\s*\}\}/g, "");
+  return text
+    .replace(/\{\{\s*(first_name|items|event|raised)\s*\}\}/g, (_m, k: keyof LetterVars) => v[k])
+    .replace(/\{\{\s*letter_button\s*\}\}/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 /** Turns the message into email HTML, with the download button where {{letter_button}} is. */
@@ -73,6 +81,8 @@ export function messageHtml(text: string, v: LetterVars, url: string, buttonLabe
       const html = escapeHtml(p.trim())
         .replace(/\{\{\s*(first_name|items|event|raised)\s*\}\}/g, (_m, k: keyof LetterVars) => escapeHtml(v[k]))
         .replace(/\{\{\s*letter_button\s*\}\}/g, "")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/ *\n */g, "\n")
         .replace(/\n/g, "<br>");
       return `<p>${html}</p>`;
     });

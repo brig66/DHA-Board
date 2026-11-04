@@ -199,6 +199,11 @@ export type InkindItem = {
   source: string | null;
   donor_letter_sent_at: string | null;
   buyer_receipt_sent_at: string | null;
+  /** an auction lot made up of several donated items (it has a buyer, not a donor) */
+  is_package: boolean;
+  /** the package this donated item was sold in */
+  package_id: string | null;
+  procurement_status: string | null;
   created_at: string;
   updated_at: string;
 };

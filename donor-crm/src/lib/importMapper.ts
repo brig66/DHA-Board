@@ -352,7 +352,7 @@ export function mapRows(raw: RawRow[]): MapResult {
 
 // Words that mark a "name" as a business rather than a person (mostly the
 // restaurants and shops that donated to Love That Smile auctions).
-const BUSINESS =
+export const BUSINESS =
   /\b(inc|llc|pllc|l\.?l\.?p|corp|corporation|company|foundation|bank|ministries|museum|theatre|theater|school|chamber of commerce|restaurant|resturant|brewery|brewhouse|grill|tacos?|taco shop|cafe|coffee|starbucks|potbelly|chick-fil-a|gnc|smallcakes|pie shoppe|lone star park|amazing lash|melting pot|music & arts|thrift ?for ?good|board and brush|hand and stone|kendra scott|raising cane'?s|mcalister'?s|houlihans|billy bob'?s|bone daddy'?s|alley cats|sugar bee'?s|painting with a twist|fish city|urban alchemy|rockfish|legal draft|studio movie|paul mitchell|henry schein|midwest dental|torchy'?s|black eyed pea|cidercade|back 9)\b|contact unknown|unknown donor/i;
 
 // Organization values that aren't really an organization
