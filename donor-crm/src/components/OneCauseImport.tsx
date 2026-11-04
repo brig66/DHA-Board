@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { money, shortDate } from "@/lib/format";
@@ -10,6 +10,8 @@ import {
   defaultChoice as defaultChoiceFor,
   isReceived,
   linkItems,
+  normKey,
+  ocEventKey,
   parseItems,
   parseProceeds,
   suggestEventName,
@@ -41,23 +43,55 @@ export default function OneCauseImport({
   const items = useMemo<OcItem[]>(() => (itemsRaw ? parseItems(itemsRaw.raw) : []), [itemsRaw]);
   const links = useMemo(() => linkItems(items, pkgs), [items, pkgs]);
 
-  // OneCause events, most recent first
+  // OneCause events (name + date), most recent first
   const ocEvents = useMemo(() => {
-    const m = new Map<string, { date: string | null; count: number; sales: number }>();
+    const m = new Map<string, { name: string; date: string | null; count: number; sales: number }>();
     for (const p of pkgs) {
-      const e = m.get(p.ocEvent) ?? { date: p.eventDate, count: 0, sales: 0 };
+      const k = ocEventKey(p);
+      const e = m.get(k) ?? { name: p.ocEvent, date: p.eventDate, count: 0, sales: 0 };
       e.count += 1;
       e.sales += p.sold ?? 0;
-      m.set(p.ocEvent, e);
+      m.set(k, e);
     }
     return Array.from(m.entries()).sort((a, b) => (b[1].date ?? "").localeCompare(a[1].date ?? ""));
   }, [pkgs]);
 
   const [eventMap, setEventMap] = useState<Record<string, string>>(() => {
     const m: Record<string, string> = {};
-    for (const p of pkgs) m[p.ocEvent] ??= suggestEventName(p.ocEvent, p.eventDate);
+    for (const p of pkgs) m[ocEventKey(p)] ??= suggestEventName(p.ocEvent, p.eventDate);
     return m;
   });
+  const edited = useRef(new Set<string>());
+
+  // What an earlier OneCause import already brought in. Those items keep the package and
+  // event they have in the CRM, and an event imported before keeps its CRM name.
+  const [existing, setExisting] = useState<Map<string, string> | null>(null);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const { data } = await createClient().from("inkind_items").select("import_key, event_name").like("import_key", "oc-%").range(0, 9999);
+      if (!live) return;
+      const m = new Map<string, string>(
+        ((data ?? []) as { import_key: string | null; event_name: string }[])
+          .filter((r) => typeof r.import_key === "string" && r.import_key.startsWith("oc-"))
+          .map((r) => [r.import_key as string, r.event_name])
+      );
+      setExisting(m);
+      setEventMap((cur) => {
+        const next = { ...cur };
+        for (const p of pkgs) {
+          const k = ocEventKey(p);
+          if (edited.current.has(k)) continue;
+          const prefix = `oc-lot|${normKey(p.ocEvent)}|${p.eventDate ?? ""}|`;
+          for (const [key, ev] of Array.from(m.entries())) if (key.startsWith(prefix)) { next[k] = ev; break; }
+        }
+        return next;
+      });
+    })();
+    return () => { live = false; };
+  }, [pkgs]);
+  const already = (it: OcItem) => !!existing?.has(it.key);
+  const [progress, setProgress] = useState<string | null>(null);
   const [itemsOnlyEvent, setItemsOnlyEvent] = useState(knownEvents.find((e) => /love that smile/i.test(e)) ?? "");
   const [label, setLabel] = useState("OneCause export");
   const [choices, setChoices] = useState<Record<number, string>>({});
@@ -66,11 +100,12 @@ export default function OneCauseImport({
   const [summary, setSummary] = useState<Summary | null>(null);
   const [showLinked, setShowLinked] = useState(false);
 
-  const eventOf = (p: OcPackage) => (eventMap[p.ocEvent] ?? "").trim();
+  const eventOf = (p: OcPackage) => (eventMap[ocEventKey(p)] ?? "").trim();
   const crmEvents = pkgs.length ? crmEventsOf(pkgs, eventMap).map((e) => e.name) : [itemsOnlyEvent].filter(Boolean);
   const latestEvent = crmEvents[0] ?? itemsOnlyEvent;
   const received = isReceived;
-  const review = links.filter((l) => received(items[l.item]) && items[l.item].donor && l.chosen === null);
+  const review = links.filter((l) => received(items[l.item]) && items[l.item].donor && l.chosen === null && !already(items[l.item]));
+  const alreadyCount = items.filter((it) => received(it) && already(it)).length;
   const choiceFor = (l: (typeof links)[number]) => choices[l.item] ?? defaultChoiceFor(l, latestEvent);
 
   const plan = useMemo(() => {
@@ -92,7 +127,7 @@ export default function OneCauseImport({
   }, [links, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const held = pkgs.filter((p) => p.value === null);
-  const unnamedEvent = ocEvents.some(([e]) => !(eventMap[e] ?? "").trim()) || (!pkgs.length && !itemsOnlyEvent.trim());
+  const unnamedEvent = ocEvents.some(([k]) => !(eventMap[k] ?? "").trim()) || (!pkgs.length && !itemsOnlyEvent.trim());
 
   const payload = () =>
     buildOneCausePayload({ pkgs, items, links, eventMap, choices, itemsOnlyEvent });
@@ -102,10 +137,27 @@ export default function OneCauseImport({
     setBusy(true);
     setError(null);
     const { packages, items: its } = payload();
-    const { data, error } = await createClient().rpc("import_onecause", { packages, items: its, source_label: label.trim() || "OneCause export" });
+    const src = label.trim() || "OneCause export";
+    const allKeys = its.map((i) => String(i.key));
+    // small batches, packages first, so no single save runs long enough to time out
+    const SIZE = 10;
+    const jobs: { packages: unknown[]; items: unknown[] }[] = [];
+    for (let i = 0; i < packages.length; i += SIZE) jobs.push({ packages: packages.slice(i, i + SIZE), items: [] });
+    for (let i = 0; i < its.length; i += SIZE) jobs.push({ packages: [], items: its.slice(i, i + SIZE) });
+    const total: Summary = { packages_added: 0, packages_updated: 0, items_added: 0, items_updated: 0, new_people: 0, matched_people: 0, possible_duplicates_flagged: 0 };
+    for (const [n, job] of Array.from(jobs.entries())) {
+      setProgress(`${n + 1} of ${jobs.length}`);
+      const { data, error } = await createClient().rpc("import_onecause", { packages: job.packages, items: job.items, source_label: src, all_item_keys: allKeys });
+      if (error) {
+        setBusy(false);
+        setProgress(null);
+        return setError(`Import stopped partway (${n} of ${jobs.length} parts saved): ${error.message}. Import the same files again to finish; nothing is doubled.`);
+      }
+      for (const k of Object.keys(total) as (keyof Summary)[]) total[k] += Number((data as Summary)[k] ?? 0);
+    }
     setBusy(false);
-    if (error) return setError(`Import stopped: ${error.message}. Nothing is doubled if you run it again.`);
-    setSummary(data as Summary);
+    setProgress(null);
+    setSummary(total);
   }
 
   if (summary)
@@ -147,14 +199,15 @@ export default function OneCauseImport({
             <table className="table">
               <thead><tr><th>OneCause event</th><th>Date</th><th className="text-right">Packages sold</th><th className="text-right">Sales</th><th>Event name in the CRM</th></tr></thead>
               <tbody>
-                {ocEvents.map(([e, v]) => (
-                  <tr key={e}>
-                    <td>{e}</td>
+                {ocEvents.map(([k, v]) => (
+                  <tr key={k}>
+                    <td>{v.name}</td>
                     <td className="whitespace-nowrap">{v.date ? shortDate(v.date) : "—"}</td>
                     <td className="text-right">{v.count}</td>
                     <td className="text-right">{money(v.sales)}</td>
                     <td>
-                      <input list="oc-known-events" className="input py-1" value={eventMap[e] ?? ""} onChange={(x) => setEventMap({ ...eventMap, [e]: x.target.value })} />
+                      <input list="oc-known-events" className="input py-1" value={eventMap[k] ?? ""}
+                        onChange={(x) => { edited.current.add(k); setEventMap({ ...eventMap, [k]: x.target.value }); }} />
                     </td>
                   </tr>
                 ))}
@@ -193,6 +246,12 @@ export default function OneCauseImport({
                 value. {pkgs.length > 0 && <><strong>{plan.autoLinked}</strong> {plural(plan.autoLinked, "was", "were")} matched to the package {plural(plan.autoLinked, "it", "they")} sold in. </>}
                 {review.length > 0 && <><strong>{review.length}</strong> {plural(review.length, "needs", "need")} you to choose below.</>}
               </li>
+              {alreadyCount > 0 && (
+                <li>
+                  <strong>{alreadyCount}</strong> {plural(alreadyCount, "item is", "items are")} already in the CRM from an earlier import. {plural(alreadyCount, "It keeps", "They keep")} the
+                  package, event, name and description {plural(alreadyCount, "it has", "they have")} there; donors, values and buyers are updated from OneCause.
+                </li>
+              )}
               {plan.contents > 0 && <li><strong>{plan.contents}</strong> {plural(plan.contents, "item", "items")} with no donor in OneCause, listed inside their packages so you can see what each package held.</li>}
               <li className="muted">
                 Left out: {plan.needsRequested} {plural(plan.needsRequested, "item", "items")} still marked &ldquo;needs requested&rdquo; in OneCause (not received
@@ -209,7 +268,7 @@ export default function OneCauseImport({
           <h3 className="text-sm font-semibold">{pkgs.length ? "3." : "2."} Check these items</h3>
           <p className="muted text-sm">
             {pkgs.length
-              ? "OneCause lot numbers repeat from year to year, so these items could belong to more than one package. The CRM picked the likeliest; change any that are wrong. Items that weren't in a sold package just need the right event."
+              ? "OneCause lot numbers repeat from year to year, so these items could belong to more than one package. The CRM picked the likeliest; change any that are wrong. Items that weren’t in a sold package just need the right event."
               : "Choose the event for each item."}
           </p>
           <div className="mt-2 overflow-x-auto rounded-lg border border-[var(--border)]">
@@ -298,7 +357,7 @@ export default function OneCauseImport({
           <input className="input mt-1" value={label} onChange={(e) => setLabel(e.target.value)} />
         </div>
         <button className="btn btn-primary" disabled={busy || unnamedEvent || (!pPreview.length && !iPreview.length)} onClick={run}>
-          {busy ? "Importing…" : `Import ${pPreview.length ? `${pPreview.length} packages` : ""}${pPreview.length && iPreview.length ? " and " : ""}${iPreview.length ? `${iPreview.length} items` : ""}`}
+          {busy ? `Importing… ${progress ?? ""}` : `Import ${pPreview.length ? `${pPreview.length} packages` : ""}${pPreview.length && iPreview.length ? " and " : ""}${iPreview.length ? `${iPreview.length} items` : ""}`}
         </button>
       </div>
       {error && <p className="text-sm text-coral-600">{error}</p>}

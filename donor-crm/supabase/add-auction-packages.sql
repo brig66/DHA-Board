@@ -10,7 +10,10 @@
 --     the package it went into.
 --   * import_onecause(): brings in OneCause's Auction Proceeds report (the
 --     packages and winners) and Items Report (the donated items and donors)
---     together. Importing the same files again updates instead of duplicating.
+--     together. Importing the same files again updates instead of duplicating,
+--     and keeps what staff changed in the CRM (names, events, packages, notes).
+--   * A rule on every save: a package never has a donor, and an item inside a
+--     package never has its own buyer or price, so no sale is counted twice.
 -- =============================================================================
 
 alter table public.inkind_items add column if not exists is_package boolean not null default false;
@@ -29,6 +32,55 @@ begin
       check (package_id is null or package_id <> id);
   end if;
 end $$;
+
+-- Every save, from any screen or import: a package is sold, not donated, and an
+-- item sold inside a package is bought through the package. This keeps each
+-- sale counted once and each gift on the right donor.
+create or replace function public.inkind_items_package_rules()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.is_package then
+    new.donor_contact_id := null;
+    new.package_id := null;
+  elsif new.package_id is not null then
+    if not exists (select 1 from public.inkind_items where id = new.package_id and is_package) then
+      raise exception 'That package was not found.';
+    end if;
+    new.buyer_contact_id := null;
+    new.bidder_number := null;
+    new.sold_amount := null;
+    new.sold_date := null;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists inkind_items_package_rules on public.inkind_items;
+create trigger inkind_items_package_rules
+  before insert or update on public.inkind_items
+  for each row execute function public.inkind_items_package_rules();
+
+-- a package that somehow still carries an in-kind gift loses it
+create or replace function public.inkind_items_package_gift()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.is_package and new.donation_id is not null then
+    perform public.inkind_sync_gift(new.id);
+  end if;
+  return null;
+end;
+$$;
+
+drop trigger if exists inkind_items_package_gift on public.inkind_items;
+create trigger inkind_items_package_gift
+  after insert or update of is_package, donation_id on public.inkind_items
+  for each row execute function public.inkind_items_package_gift();
 
 -- ---------------------------------------------------------------------------
 -- Saving an item or package from the In-Kind tab
@@ -113,8 +165,19 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- OneCause import: packages (Auction Proceeds) and donated items (Items Report)
+--
+-- The screen sends the files in small parts (packages first). all_item_keys
+-- lists every item in the whole import, so an item already in the CRM under
+-- another key is only taken over when no other row of this import is its own.
+--
+-- On a repeat import, OneCause updates the sale and the donation: buyers,
+-- prices, market values, donors and procurement status. What staff set in the
+-- CRM stays: names, descriptions, events, which package an item is in, notes,
+-- and a lot staff turned into a single item (or the reverse).
 -- ---------------------------------------------------------------------------
-create or replace function public.import_onecause(packages jsonb, items jsonb, source_label text default 'OneCause')
+drop function if exists public.import_onecause(jsonb, jsonb, text);
+create or replace function public.import_onecause(packages jsonb, items jsonb, source_label text default 'OneCause',
+  all_item_keys text[] default null)
 returns jsonb
 language plpgsql
 set search_path = public
@@ -122,11 +185,16 @@ as $$
 declare
   r jsonb;
   v_id uuid;
-  v_pkg uuid;
+  v_cur public.inkind_items;
+  v_pkg public.inkind_items;
   v_person uuid;
   v_created boolean;
   v_sale text;
   v_title text;
+  v_event text;
+  v_value numeric;
+  v_link boolean;
+  v_keys text[];
   p_added int := 0; p_updated int := 0; i_added int := 0; i_updated int := 0;
   new_people int := 0; matched int := 0; flagged int := 0;
   before_flags int;
@@ -135,6 +203,8 @@ begin
     raise exception 'Not authorized';
   end if;
   select count(*) into before_flags from public.possible_duplicates;
+  v_keys := coalesce(all_item_keys,
+    array(select value ->> 'key' from jsonb_array_elements(coalesce(items, '[]'::jsonb))));
 
   -- packages first, so items can point to them
   for r in select value from jsonb_array_elements(coalesce(packages, '[]'::jsonb)) loop
@@ -152,8 +222,8 @@ begin
       v_sale := null;
     end if;
 
-    select id into v_id from public.inkind_items where import_key = r ->> 'key';
-    if v_id is null then
+    select * into v_cur from public.inkind_items where import_key = r ->> 'key';
+    if v_cur.id is null then
       insert into public.inkind_items (event_name, item_number, title, description, sale_type, is_package,
         fair_market_value, buyer_contact_id, bidder_number, sold_amount, sold_date, notes, source, import_key)
       values (coalesce(nullif(trim(coalesce(r ->> 'event_name', '')), ''), 'In-kind donation'),
@@ -163,24 +233,23 @@ begin
         nullif(r ->> 'sold_date', '')::date, nullif(trim(coalesce(r ->> 'notes', '')), ''), source_label, r ->> 'key')
       returning id into v_id;
       p_added := p_added + 1;
-    else
+    elsif v_cur.is_package then
+      v_id := v_cur.id;
       update public.inkind_items set
-        event_name = coalesce(nullif(trim(coalesce(r ->> 'event_name', '')), ''), event_name),
-        item_number = coalesce(nullif(trim(coalesce(r ->> 'item_number', '')), ''), item_number),
-        title = v_title,
-        sale_type = coalesce(v_sale, sale_type),
-        is_package = true,
-        package_id = null,
+        item_number = coalesce(item_number, nullif(trim(coalesce(r ->> 'item_number', '')), '')),
+        sale_type = coalesce(sale_type, v_sale),
         fair_market_value = coalesce(nullif(r ->> 'fair_market_value', '')::numeric, fair_market_value),
         buyer_contact_id = coalesce(v_person, buyer_contact_id),
         bidder_number = coalesce(nullif(trim(coalesce(r ->> 'bidder_number', '')), ''), bidder_number),
         sold_amount = coalesce(nullif(r ->> 'sold_amount', '')::numeric, sold_amount),
         sold_date = coalesce(nullif(r ->> 'sold_date', '')::date, sold_date),
-        -- Staff notes are never replaced by a repeat import; OneCause's notes only fill an empty box.
         notes = coalesce(notes, nullif(trim(coalesce(r ->> 'notes', '')), '')),
         updated_at = now()
       where id = v_id;
       p_updated := p_updated + 1;
+    else
+      -- staff made this lot a single item on the In-Kind tab; leave it as they set it
+      continue;
     end if;
     perform public.inkind_sync_gift(v_id);
   end loop;
@@ -197,31 +266,57 @@ begin
     end if;
     v_pkg := null;
     if coalesce(r ->> 'package_key', '') <> '' then
-      select id into v_pkg from public.inkind_items where import_key = r ->> 'package_key' and is_package;
+      select * into v_pkg from public.inkind_items where import_key = r ->> 'package_key' and is_package;
+    end if;
+    v_event := coalesce(v_pkg.event_name, nullif(trim(coalesce(r ->> 'event_name', '')), ''), 'In-kind donation');
+    v_value := nullif(r ->> 'fair_market_value', '')::numeric;
+
+    select * into v_cur from public.inkind_items where import_key = r ->> 'key';
+    -- Not from an earlier OneCause import under this key: the same gift may already be here from
+    -- a gift spreadsheet, another item list, or an older export whose lot number changed. Take it
+    -- over (same donor and event, and the same name, or the same value for a row OneCause didn't add).
+    if v_cur.id is null and v_person is not null then
+      select * into v_cur from public.inkind_items i
+      where not i.is_package
+        and i.donor_contact_id = v_person
+        and i.event_name = v_event
+        and (i.import_key is null or not (i.import_key = any (v_keys)))
+        and (lower(trim(i.title)) in (lower(v_title), lower(regexp_replace(v_title, '\s*\(\d+\)$', '')))
+             or (v_value is not null and i.fair_market_value = v_value
+                 and (i.import_key is null or i.import_key not like 'oc-item|%')))
+      order by (lower(trim(i.title)) = lower(v_title)) desc, i.created_at
+      limit 1;
+      if v_cur.id is not null then
+        update public.inkind_items set import_key = r ->> 'key', title = v_title where id = v_cur.id;
+      end if;
     end if;
 
-    select id into v_id from public.inkind_items where import_key = r ->> 'key';
-    if v_id is null then
+    if v_cur.id is null then
       insert into public.inkind_items (event_name, title, description, sale_type, donor_contact_id, fair_market_value,
         received_date, package_id, procurement_status, notes, source, import_key)
-      values (coalesce(nullif(trim(coalesce(r ->> 'event_name', '')), ''), 'In-kind donation'), v_title,
-        nullif(trim(coalesce(r ->> 'description', '')), ''),
-        (select sale_type from public.inkind_items where id = v_pkg),
-        v_person, nullif(r ->> 'fair_market_value', '')::numeric, nullif(r ->> 'received_date', '')::date, v_pkg,
+      values (v_event, v_title, nullif(trim(coalesce(r ->> 'description', '')), ''), v_pkg.sale_type,
+        v_person, v_value, nullif(r ->> 'received_date', '')::date, v_pkg.id,
         nullif(trim(coalesce(r ->> 'procurement_status', '')), ''), nullif(trim(coalesce(r ->> 'notes', '')), ''),
         source_label, r ->> 'key')
       returning id into v_id;
       i_added := i_added + 1;
+    elsif v_cur.is_package then
+      -- staff made this item into a package; leave it as they set it
+      continue;
     else
+      v_id := v_cur.id;
+      -- put it in its package only if it isn't in one yet and wasn't sold on its own
+      v_link := v_cur.package_id is null and v_pkg.id is not null
+                and v_cur.buyer_contact_id is null and v_cur.sold_amount is null;
       update public.inkind_items set
-        event_name = coalesce(nullif(trim(coalesce(r ->> 'event_name', '')), ''), event_name),
-        title = v_title,
-        description = coalesce(nullif(trim(coalesce(r ->> 'description', '')), ''), description),
+        description = coalesce(description, nullif(trim(coalesce(r ->> 'description', '')), '')),
         donor_contact_id = coalesce(v_person, donor_contact_id),
-        fair_market_value = coalesce(nullif(r ->> 'fair_market_value', '')::numeric, fair_market_value),
-        received_date = coalesce(nullif(r ->> 'received_date', '')::date, received_date),
-        package_id = case when is_package then null else coalesce(v_pkg, package_id) end,
-        sale_type = coalesce((select sale_type from public.inkind_items where id = v_pkg), sale_type),
+        fair_market_value = coalesce(v_value, fair_market_value),
+        package_id = case when v_link then v_pkg.id else package_id end,
+        event_name = case when v_link then v_pkg.event_name else event_name end,
+        sale_type = case when v_link then coalesce(v_pkg.sale_type, sale_type) else sale_type end,
+        received_date = case when v_link then coalesce(nullif(r ->> 'received_date', '')::date, received_date)
+                             else coalesce(received_date, nullif(r ->> 'received_date', '')::date) end,
         procurement_status = coalesce(nullif(trim(coalesce(r ->> 'procurement_status', '')), ''), procurement_status),
         updated_at = now()
       where id = v_id;
@@ -241,5 +336,7 @@ $$;
 -- Who may run what
 -- ---------------------------------------------------------------------------
 revoke execute on function public.save_inkind_item(jsonb) from anon, public;
-revoke execute on function public.import_onecause(jsonb, jsonb, text) from anon, public;
-grant execute on function public.save_inkind_item(jsonb), public.import_onecause(jsonb, jsonb, text) to authenticated;
+revoke execute on function public.import_onecause(jsonb, jsonb, text, text[]) from anon, public;
+revoke execute on function public.inkind_items_package_rules() from anon, public;
+revoke execute on function public.inkind_items_package_gift() from anon, public;
+grant execute on function public.save_inkind_item(jsonb), public.import_onecause(jsonb, jsonb, text, text[]) to authenticated;

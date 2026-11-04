@@ -19,8 +19,8 @@ const has = (headers: string[], ...names: string[]) =>
 export function detectOneCause(raw: RawRow[]): OcFileKind {
   const headers = Array.from(new Set(raw.flatMap((r) => Object.keys(r))));
   if (has(headers, "Lot #", "Lot Name", "Winning Bid Amount")) return "proceeds";
-  if (has(headers, "Item Name", "Lot Number")) return "items";
-  if (has(headers, "Item Name", "Value", "Donor Name")) return "items";
+  // OneCause's own column names, so an ordinary spreadsheet of items isn't mistaken for this report
+  if (has(headers, "Item Name", "Procurement Status") || has(headers, "Item Name", "Assigned To Lot")) return "items";
   if (has(headers, "Lot Name", "Bid Amount", "Winning Bid")) return "bids";
   return null;
 }
@@ -36,9 +36,17 @@ const STOP = new Set(["the", "and", "with", "for", "from", "your", "inc", "llc",
 export const tokens = (s: string) =>
   new Set((s.toLowerCase().match(/[a-z0-9']{3,}/g) ?? []).map((t) => t.replace(/'s$|'/g, "")).filter((t) => !STOP.has(t)));
 
-// names that are clearly a business, school, team or organization
-const ORG =
-  /\b(co|company|inc|llc|pllc|corp|foundation|orchestra|symphony|wings|stars|rangers|cowboys|waterpark|waters|garden|gardens|museum|theatre|theater|chamber|commerce|group|services|motorcars|motors|jewelry|jewelers|credit union|bank|house|inn|spa|salon|dental|dentistry|orthodontics|massage|pickle|distilling|distillery|winery|brewery|pie|bakery|cafe|grill|tacos?|restaurant|cidercade|crawling|texas|arlington|club|church|school|university|department|market|shop|studio|air|cinema|mall|hotel|resort|bowl|golf|academy|association|network|networking|council|center|centre)\b|^back 9$|'s\b/i;
+// Words that only a business, school, team or organization would have in its name
+const ORG_STRONG =
+  /\b(company|inc|llc|pllc|corp|corporation|foundation|orchestra|symphony|rangers|cowboys|mavericks|waterpark|museum|theatre|theater|chamber of commerce|services|motorcars|motors|jewelry|jewelers|credit union|bank|spa|salon|dental|dentistry|orthodontics|massage|distilling|distillery|winery|brewery|bakery|cafe|grill|tacos?|restaurant|cidercade|club|school|university|department|cinema|mall|hotel|resort|academy|association|networking|council|center|centre|group)\b|\bco\.?$|^back 9$|^the\s|'s\b/i;
+// Words that are also surnames ("Susan Waters", "Mark Church"), so they only count with another sign
+const ORG_WEAK = /\b(waters|house|inn|gardens?|pie|crawling|pickle|market|shop|studio|air|bowl|golf|wings|stars|network|church|dallas|fort worth|arlington|texas|grand prairie|mansfield)\b/gi;
+
+export function isOrganizationName(n: string): boolean {
+  if (ORG_STRONG.test(n)) return true;
+  const weak = (n.match(ORG_WEAK) ?? []).length;
+  return weak >= 2 || (weak >= 1 && n.split(" ").length >= 3 && !/&|\band\b/i.test(n));
+}
 
 export function personFromName(name: string, email: string): AttendeeRow | null {
   const n = name.replace(/\s+/g, " ").trim();
@@ -48,15 +56,22 @@ export function personFromName(name: string, email: string): AttendeeRow | null 
   // "Michael Jacobson Jacobson" -> "Michael Jacobson"
   const deduped = words.filter((w, i) => i === 0 || w.toLowerCase() !== words[i - 1].toLowerCase()).join(" ");
   const base = { email: e, phone: null, address: null, city: null, state: null, zip: null, country: null };
-  if (deduped && (ORG.test(deduped) || words.length > 3)) {
+  if (deduped && isOrganizationName(deduped)) {
     return { ...base, first_name: "", last_name: deduped, organization: deduped };
   }
   const p = parseName(deduped);
   return { ...base, first_name: p.first, last_name: p.last, organization: p.organization };
 }
 
-/** "15 Jun 24 18:00 CDT" -> "2024-06-15" */
-export function ocDate(s: string): string | null {
+/** "15 Jun 24 18:00 CDT" -> "2024-06-15". Also takes a date cell from an .xlsx file. */
+export function ocDate(v: unknown): string | null {
+  if (v instanceof Date && !isNaN(v.getTime()))
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  const s = str(v);
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (us) return `${us[3].length === 2 ? "20" + us[3] : us[3]}-${us[1].padStart(2, "0")}-${us[2].padStart(2, "0")}`;
   const m = s.match(/(\d{1,2})\s+([A-Za-z]{3})[a-z]*\s+(\d{2,4})/);
   if (!m) return null;
   const mon = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(m[2].toLowerCase());
@@ -72,7 +87,7 @@ export function suggestEventName(ocName: string, date: string | null): string {
   return ocName.replace(/\s+/g, " ").trim();
 }
 
-const saleType = (auction: string) =>
+export const saleType = (auction: string) =>
   /live/i.test(auction) ? "Live auction" : /raffle/i.test(auction) ? "Raffle" : "Silent auction";
 
 export type OcPackage = {
@@ -108,8 +123,27 @@ function cleanAddress(a: string): string | null {
   return s ? properCase(s, false) : null;
 }
 
+/**
+ * Gives rows that would share a key a suffix taken from what's in them (not their
+ * order in the file), so a later export with the rows in another order still
+ * updates the same records.
+ */
+function settleKeys<T extends { key: string }>(rows: T[], extra: (r: T) => string): void {
+  const groups = new Map<string, T[]>();
+  for (const r of rows) groups.set(r.key, [...(groups.get(r.key) ?? []), r]);
+  for (const g of Array.from(groups.values())) {
+    if (g.length < 2) continue;
+    const used = new Map<string, number>();
+    for (const r of g) {
+      const base = `${r.key}|${normKey(extra(r)) || "x"}`;
+      const n = (used.get(base) ?? 0) + 1;
+      used.set(base, n);
+      r.key = n > 1 ? `${base}|${n}` : base;
+    }
+  }
+}
+
 export function parseProceeds(raw: RawRow[]): OcPackage[] {
-  const seen = new Map<string, number>();
   const out: OcPackage[] = [];
   for (const r of raw) {
     const title = get(r, "Lot Name");
@@ -117,10 +151,9 @@ export function parseProceeds(raw: RawRow[]): OcPackage[] {
     const ocEvent = get(r, "Event Name").replace(/\s+/g, " ");
     const auction = get(r, "Auction Name");
     const lot = get(r, "Lot #");
-    let key = `oc-lot|${normKey(ocEvent)}|${normKey(auction)}|${lot || normKey(title)}`;
-    const n = (seen.get(key) ?? 0) + 1;
-    seen.set(key, n);
-    if (n > 1) key += `|${n}`;
+    const eventDate = ocDate(r["Event Date"]);
+    // the event date is part of the key, so an event named the same every year stays separate
+    const key = `oc-lot|${normKey(ocEvent)}|${eventDate ?? ""}|${normKey(auction)}|${lot || normKey(title)}`;
     const value = money(get(r, "Value"));
     const first = get(r, "First Name");
     const last = get(r, "Last Name");
@@ -129,7 +162,7 @@ export function parseProceeds(raw: RawRow[]): OcPackage[] {
     out.push({
       key,
       ocEvent,
-      eventDate: ocDate(get(r, "Event Date")),
+      eventDate,
       auction,
       lot,
       title,
@@ -155,11 +188,12 @@ export function parseProceeds(raw: RawRow[]): OcPackage[] {
           : null,
     });
   }
+  // a lot sold more than once (several winners) is told apart by bidder
+  settleKeys(out, (p) => `${p.paddle ?? ""} ${p.buyer?.email ?? ""} ${p.buyer?.last_name ?? ""}`);
   return out;
 }
 
 export function parseItems(raw: RawRow[]): OcItem[] {
-  const seen = new Map<string, number>();
   const out: OcItem[] = [];
   for (const r of raw) {
     const title = get(r, "Item Name");
@@ -167,10 +201,7 @@ export function parseItems(raw: RawRow[]): OcItem[] {
     const lot = get(r, "Lot Number");
     const donorName = get(r, "Donor Name");
     const donorEmail = get(r, "Donor Contact").includes("@") ? get(r, "Donor Contact").toLowerCase() : "";
-    let key = `oc-item|${normKey(title)}|${lot}|${normKey(donorName)}`;
-    const n = (seen.get(key) ?? 0) + 1;
-    seen.set(key, n);
-    if (n > 1) key += `|${n}`;
+    const key = `oc-item|${normKey(title)}|${lot}|${normKey(donorName)}`;
     const qty = Math.max(1, parseInt(get(r, "Quantity") || "1", 10) || 1);
     const unit = money(get(r, "Value"));
     out.push({
@@ -186,6 +217,8 @@ export function parseItems(raw: RawRow[]): OcItem[] {
       donor: donorName || donorEmail ? personFromName(donorName, donorEmail) : null,
     });
   }
+  // the same item, lot and donor in two different years is told apart by its value and description
+  settleKeys(out, (i) => `${i.value ?? ""} ${i.quantity} ${i.description.slice(0, 80)}`);
   return out;
 }
 
@@ -220,12 +253,14 @@ export function linkItems(items: OcItem[], pkgs: OcPackage[]): Link[] {
     scored.sort((a, b) => b.score - a.score);
     let chosen: number | null = null;
     let sure = false;
-    if (scored.length === 1 && (scored[0].score > 0 || !it.donorName)) {
-      chosen = scored[0].pkg;
-      sure = scored[0].score > 0;
-    } else if (scored.length > 1 && scored[0].score >= 3 && scored[0].score - scored[1].score >= 2) {
+    // Linked without asking only on a strong match: the donor is listed on the package, or most of
+    // the item's name is in the package's name. One shared word isn't enough.
+    if (scored.length >= 1 && scored[0].score >= 3 && (scored.length === 1 || scored[0].score - scored[1].score >= 2)) {
       chosen = scored[0].pkg;
       sure = true;
+    } else if (scored.length === 1 && !it.donor) {
+      // no donor to thank: it's only listed inside the package, so the one lot with its number will do
+      chosen = scored[0].pkg;
     }
     return { item: idx, candidates: scored, chosen, sure };
   });
@@ -238,11 +273,14 @@ export function ackDeadlinePassed(giftDate: string | null, today: string): boole
   return today > `${y + 1}-10-15`;
 }
 
+/** One OneCause event: its name plus its date, since a name can repeat from year to year. */
+export const ocEventKey = (p: Pick<OcPackage, "ocEvent" | "eventDate">) => `${p.ocEvent}|${p.eventDate ?? ""}`;
+
 export type BuildInput = {
   pkgs: OcPackage[];
   items: OcItem[];
   links: Link[];
-  eventMap: Record<string, string>; // OneCause event -> CRM event name
+  eventMap: Record<string, string>; // ocEventKey -> CRM event name
   choices: Record<number, string>; // item index -> "pkg:<i>" | "event:<name>" for items staff placed by hand
   itemsOnlyEvent: string; // event for items when there's no Auction Proceeds file
 };
@@ -257,7 +295,7 @@ export function defaultChoice(l: Link, latestEvent: string): string {
 export function crmEventsOf(pkgs: OcPackage[], eventMap: Record<string, string>): { name: string; date: string | null }[] {
   const m = new Map<string, string | null>();
   for (const p of [...pkgs].sort((a, b) => (b.eventDate ?? "").localeCompare(a.eventDate ?? ""))) {
-    const n = (eventMap[p.ocEvent] ?? "").trim();
+    const n = (eventMap[ocEventKey(p)] ?? "").trim();
     if (n && !m.has(n)) m.set(n, p.eventDate);
   }
   return Array.from(m.entries()).map(([name, date]) => ({ name, date }));
@@ -265,14 +303,14 @@ export function crmEventsOf(pkgs: OcPackage[], eventMap: Record<string, string>)
 
 /** What import_onecause() receives. */
 export function buildOneCausePayload(x: BuildInput) {
-  const eventOf = (p: OcPackage) => (x.eventMap[p.ocEvent] ?? "").trim();
+  const eventOf = (p: OcPackage) => (x.eventMap[ocEventKey(p)] ?? "").trim();
   const evs = crmEventsOf(x.pkgs, x.eventMap);
   const latest = evs[0]?.name ?? x.itemsOnlyEvent.trim();
   const dateOf = (name: string) => evs.find((e) => e.name === name)?.date ?? null;
   const packages = x.pkgs.map((p) => ({
     key: p.key,
     event_name: eventOf(p),
-    sale_type: /live/i.test(p.auction) ? "Live auction" : "Silent auction",
+    sale_type: saleType(p.auction),
     item_number: p.lot,
     title: p.title,
     fair_market_value: p.value,

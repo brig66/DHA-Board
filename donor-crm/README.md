@@ -57,7 +57,10 @@ its own sign-ins, and its own database.
     values, and winners. The OneCause import creates the packages with their
     winning bidders, the donated items with their donors, and links each item
     to the package it sold in. Items it can't place for certain are listed for
-    staff to choose before importing.
+    staff to choose before importing. Importing the same files again updates
+    buyers, prices, values and donors from OneCause, and keeps what staff
+    changed in the CRM (names, descriptions, events, packages, notes). The
+    import is saved in small parts so no single save times out.
   - For volunteers, people, and auction items, the CRM shows which column it
     matched to each field, and staff can change any match before importing.
   - Uploading the same file twice is harmless: gifts and hours already in the
@@ -73,6 +76,8 @@ its own sign-ins, and its own database.
     their gift was part of, and the buyer gets one receipt for the package.
   - A package OneCause lists with no market value shows **Needs a value**, and
     its receipt can't be sent until staff enter one.
+  - The database enforces that a package never has a donor and an item inside
+    a package never has its own buyer or price, so each sale counts once.
   - Letters for events whose IRS acknowledgment deadline has passed
     (October 15 of the following year) show a warning before sending.
   - **Email thank-you letters** sends each donor a thank-you with a link to a
