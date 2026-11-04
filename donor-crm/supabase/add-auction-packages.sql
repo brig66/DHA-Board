@@ -249,6 +249,8 @@ declare
   v_adopted boolean;
   v_lot public.inkind_items;
   v_reviewed boolean;
+  v_note text;
+  v_lot_item boolean;
   v_keys text[];
   p_added int := 0; p_updated int := 0; i_added int := 0; i_updated int := 0;
   new_people int := 0; matched int := 0; flagged int := 0;
@@ -334,9 +336,22 @@ begin
 
     v_adopted := false;
     select * into v_cur from public.inkind_items where import_key = r ->> 'key' or onecause_key = r ->> 'key' limit 1;
-    if v_cur.id is null and v_lot.id is not null and v_lot.onecause_key is null then
-      update public.inkind_items set onecause_key = r ->> 'key' where id = v_lot.id;
-      select * into v_cur from public.inkind_items where id = v_lot.id;
+    if v_cur.id is null and v_lot.id is not null then
+      -- Staff made this lot a single item. It is this donated item when the donor (or, with no
+      -- donor set, the value) matches. Any other item of that lot isn't added on its own, which
+      -- would count the lot twice; it is noted on the single item for staff to see.
+      if v_lot.onecause_key is null
+         and (v_lot.donor_contact_id = v_person
+              or (v_lot.donor_contact_id is null and v_value is not null and v_lot.fair_market_value = v_value)) then
+        update public.inkind_items set onecause_key = r ->> 'key' where id = v_lot.id;
+        select * into v_cur from public.inkind_items where id = v_lot.id;
+      else
+        v_note := format('OneCause also lists %s from %s in this lot.', v_title,
+          coalesce(nullif(trim(concat_ws(' ', r -> 'donor' ->> 'first_name', r -> 'donor' ->> 'last_name')), ''), 'no donor'));
+        update public.inkind_items set notes = concat_ws(' ', notes, v_note)
+        where id = v_lot.id and position(v_note in coalesce(notes, '')) = 0;
+        continue;
+      end if;
     end if;
     -- Not from an earlier OneCause import under this key: the same gift may already be here from
     -- a gift spreadsheet, another item list, or an older export. Take it over only when it is
@@ -386,10 +401,12 @@ begin
       -- themselves or it was sold on its own. An item already in a package stays there.
       v_link := not v_cur.package_locked and v_cur.package_id is null and v_pkg.id is not null
                 and v_cur.buyer_contact_id is null and v_cur.sold_amount is null;
+      -- a lot staff made into one item keeps the donor and value they gave it
+      v_lot_item := v_cur.import_key like 'oc-lot|%';
       update public.inkind_items set
         description = coalesce(description, nullif(trim(coalesce(r ->> 'description', '')), '')),
-        donor_contact_id = coalesce(v_person, donor_contact_id),
-        fair_market_value = coalesce(v_value, fair_market_value),
+        donor_contact_id = case when v_lot_item then donor_contact_id else coalesce(v_person, donor_contact_id) end,
+        fair_market_value = case when v_lot_item then fair_market_value else coalesce(v_value, fair_market_value) end,
         package_id = case when v_link then v_pkg.id else package_id end,
         event_name = case when v_link then v_pkg.event_name else event_name end,
         sale_type = case when v_link then coalesce(v_pkg.sale_type, sale_type) else sale_type end,

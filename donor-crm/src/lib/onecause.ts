@@ -36,15 +36,16 @@ const STOP = new Set(["the", "and", "with", "for", "from", "your", "inc", "llc",
 export const tokens = (s: string) =>
   new Set((s.toLowerCase().match(/[a-z0-9']{3,}/g) ?? []).map((t) => t.replace(/'s$|'/g, "")).filter((t) => !STOP.has(t)));
 
-// Words that only a business, school, team or organization would have in its name
+// Words only a business, school, team or organization has in its name
 const ORG_STRONG =
-  /\b(pizza|pizzeria|kitchen|steakhouse|smokehouse|bbq|barbecue|bistro|tavern|cantina|pub|donuts?|cupcakes?|creamery|coffee|boutique|florist|flowers|realty|realtors?|insurance|fitness|gym|yoga|pilates|pharmacy|clinic|hospital|medical|chiropractic|optometry|veterinary|salons?|barbershop|nails|lash|beauty|cosmetics|apparel|clothing|gallery|studios|cinemas|bowling|lanes|arcade|trampoline|zoo|aquarium|stadium|arena|flags|adventures?|entertainment|productions|photography|designs?|marketing|media|solutions|partners|holdings|enterprises|industries|international|logistics|construction|roofing|plumbing|electric|landscaping|cleaning|catering|wines?|spirits|liquors?|cellars|vineyards?|farms?|nursery|ministries|events|company|inc|llc|pllc|corp|corporation|foundation|orchestra|symphony|rangers|cowboys|mavericks|waterpark|museum|theatre|theater|chamber of commerce|services|motorcars|motors|jewelry|jewelers|credit union|bank|spa|salon|dental|dentistry|orthodontics|massage|distilling|distillery|winery|brewery|bakery|cafe|grill|tacos?|restaurant|cidercade|club|school|university|department|cinema|mall|hotel|resort|academy|association|networking|council|center|centre|group)\b|\bco\.?$|^back 9$|^the\s|'s\b|chicken n pickle/i;
-// Words that are also surnames ("Susan Waters", "Mark Church"), so they only count with another sign
-const ORG_WEAK = /\b(waters|house|inn|gardens?|pie|crawling|pickle|market|shop|studio|air|bowl|golf|wings|stars|network|church|park|street|ranch|dallas|fort worth|arlington|texas|grand prairie|mansfield)\b/gi;
+  /\b(company|inc|llc|pllc|corp|corporation|foundation|orchestra|symphony|rangers|cowboys|mavericks|waterpark|museum|theatre|theater|chamber of commerce|services|motorcars|motors|jewelry|jewelers|credit union|spa|salon|salons|dental|dentistry|orthodontics|massage|distilling|distillery|winery|brewery|bakery|cafe|grill|tacos?|restaurant|roadhouse|cidercade|school|university|department|cinema|cinemas|hotel|resort|academy|association|networking|council|center|centre|group|community|pizza|pizzeria|steakhouse|smokehouse|bbq|barbecue|bistro|tavern|cantina|pub|donuts?|cupcakes?|creamery|boutique|florist|realty|realtors?|insurance|fitness|gym|yoga|pilates|pharmacy|clinic|hospital|medical|chiropractic|optometry|veterinary|barbershop|beauty|cosmetics|apparel|clothing|studios|bowling|arcade|trampoline|zoo|aquarium|stadium|flags|adventures?|entertainment|productions|photography|marketing|solutions|holdings|enterprises|industries|international|logistics|construction|roofing|plumbing|landscaping|cleaning|catering|spirits|liquors?|cellars|vineyards?|nursery|ministries)\b|\bco\.?$|^back 9$|^the\s|'s\b|chicken n pickle/i;
+// Business words that are also surnames ("Susan Waters", "Maria Arena", "Tom Flowers"): they make a
+// name a business only when it doesn't read like a person's
+const ORG_WEAK = /\b(waters|house|inn|gardens?|pie|crawling|pickle|market|shop|studio|air|bowl|golf|wings|stars|network|church|park|street|ranch|arena|flowers|kitchen|gallery|lanes|lash|coffee|farms?|club|bank|mall|nails|media|partners|events|designs?|wines?|electric|dallas|fort worth|arlington|texas|grand prairie|mansfield)\b/gi;
 
 // Common first names, to tell "Mary Ann Church" (a person) from "Main Street Market" (a business)
 const FIRST_NAMES = new Set(
-  ("aaron adam alan albert alex alexander alice allison amanda amber amy andrea andrew angela ann anna anne annie anthony april ashley " +
+  ("aaron adam alan albert alex maria marie rosa ana alexander alice allison amanda amber amy andrea andrew angela ann anna anne annie anthony april ashley " +
    "barbara becky ben benjamin beth betty beverly bill billy bob bobby bonnie brad bradley brandon brenda brian brittany bruce bryan " +
    "carl carla carol carolyn carrie catherine cathy charles charlie cheryl chris christina christine christopher cindy claire connie craig crystal cynthia " +
    "dale dan daniel danielle darlene dave david dawn dean debbie deborah debra denise dennis diana diane don donald donna doris dorothy doug douglas " +
@@ -61,17 +62,15 @@ const FIRST_NAMES = new Set(
 export function isOrganizationName(n: string): boolean {
   if (ORG_STRONG.test(n) || BUSINESS.test(n)) return true;
   const weak = (n.match(ORG_WEAK) ?? []).length;
-  if (weak >= 2) return true; // "Dallas Wings", "Urban Air Arlington"
   if (weak === 0) return false;
-  // one surname-like word: a short name is a person ("Susan Waters"); a longer one is a business
-  // unless it reads like a person ("Mary Ann Church", "Robert E. House", "Dr. Mark Church")
+  // "Mary Ann Church", "Robert E. House", "Dr. Mark Church", "Maria Arena", "John & Jane Waters"
   const words = n.replace(/^(dr|mr|mrs|ms|miss)\.?\s+/i, "").split(" ");
-  if (words.length < 3) return false;
   const personLike =
     /^(dr|mr|mrs|ms|miss)\.?\s/i.test(n) ||
-    words.some((w) => /^[a-z]\.?$/i.test(w)) ||
+    (words.length > 2 && words.slice(1, -1).some((w) => /^[a-z]\.?$/i.test(w))) ||
     FIRST_NAMES.has(words[0].toLowerCase().replace(/[^a-z]/g, "")) ||
     /&|\band\b/i.test(n);
+  // otherwise a business word makes it a business ("Main Street Market", "Dallas Wings")
   return !personLike;
 }
 
@@ -401,8 +400,8 @@ export function buildOneCausePayload(x: BuildInput) {
       event_name: event,
       received_date: pkg?.eventDate ?? dateOf(event),
       notes: it.status === "committed" ? "OneCause status: committed (promised; check that it was received)." : null,
-      // placed by staff on the review list, so later imports leave its package alone
-      reviewed: !!it.donor && l.chosen === null,
+      // staff changed where it belongs on the review list, so later imports leave its package alone
+      reviewed: x.pkgs.length > 0 && !!it.donor && l.chosen === null && x.choices[l.item] !== undefined,
     });
   }
   return { packages, items, latest };
