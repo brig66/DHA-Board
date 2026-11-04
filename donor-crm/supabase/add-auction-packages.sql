@@ -201,13 +201,14 @@ begin
     if contact_id is not null then
       return;
     end if;
-    -- a person whose name was read as a business ("Min Park"): the one person with that name
+    -- a person whose name was read as a business ("Min Park"): the one person with exactly that name
     if v_last ~ '\s' then
-      v_pf := regexp_replace(v_last, '\s+\S+$', '');
-      v_pl := regexp_replace(v_last, '^.*\s', '');
+      v_pf := regexp_replace(lower(regexp_replace(v_last, '\s+\S+$', '')), '[^a-z0-9]', '', 'g');
+      v_pl := regexp_replace(lower(regexp_replace(v_last, '^.*\s', '')), '[^a-z0-9]', '', 'g');
       select min(c.id::text)::uuid into contact_id from public.contacts c
       where not c.is_anonymous and c.first_name <> ''
-        and public.first_compat(c.first_name, v_pf) and public.last_compat(c.last_name, v_pl)
+        and regexp_replace(lower(c.first_name), '[^a-z0-9]', '', 'g') = v_pf
+        and regexp_replace(lower(c.last_name), '[^a-z0-9]', '', 'g') = v_pl
         and (v_email is null or public.contact_has_email(c, v_email))
       having count(*) = 1;
       if contact_id is not null then
@@ -229,11 +230,17 @@ begin
       return;
     end if;
   end if;
-  -- a business whose name was read as a person's ("Pinstack Bowl"): the business with that exact name
-  if v_first <> '' and v_last <> '' then
+  -- a business whose name was read as a person's ("Pinstack Bowl"): the business with that exact
+  -- name, but only when no person has that name and the row's email (if any) is the business's
+  if v_first <> '' and v_last <> ''
+     and not exists (select 1 from public.contacts p
+                     where not p.is_anonymous and p.first_name <> ''
+                       and regexp_replace(lower(p.first_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(v_first), '[^a-z0-9]', '', 'g')
+                       and regexp_replace(lower(p.last_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(v_last), '[^a-z0-9]', '', 'g')) then
     select c.id into contact_id from public.contacts c
     where not c.is_anonymous and c.first_name = ''
       and regexp_replace(lower(c.last_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(v_first || v_last), '[^a-z0-9]', '', 'g')
+      and (v_email is null or public.contact_has_email(c, v_email))
     order by c.created_at limit 1;
     if contact_id is not null then
       return;
