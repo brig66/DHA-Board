@@ -7,7 +7,7 @@
 // of one event), so each item is matched to the right package using its
 // donor and its name, and anything uncertain is left for staff to choose.
 
-import { cleanZip, formatPhone, parseName, properCase, str, type AttendeeRow } from "./importMapper";
+import { BUSINESS, cleanZip, formatPhone, parseName, properCase, str, type AttendeeRow } from "./importMapper";
 
 export type RawRow = Record<string, unknown>;
 
@@ -38,14 +38,41 @@ export const tokens = (s: string) =>
 
 // Words that only a business, school, team or organization would have in its name
 const ORG_STRONG =
-  /\b(company|inc|llc|pllc|corp|corporation|foundation|orchestra|symphony|rangers|cowboys|mavericks|waterpark|museum|theatre|theater|chamber of commerce|services|motorcars|motors|jewelry|jewelers|credit union|bank|spa|salon|dental|dentistry|orthodontics|massage|distilling|distillery|winery|brewery|bakery|cafe|grill|tacos?|restaurant|cidercade|club|school|university|department|cinema|mall|hotel|resort|academy|association|networking|council|center|centre|group)\b|\bco\.?$|^back 9$|^the\s|'s\b|chicken n pickle/i;
+  /\b(pizza|pizzeria|kitchen|steakhouse|smokehouse|bbq|barbecue|bistro|tavern|cantina|pub|donuts?|cupcakes?|creamery|coffee|boutique|florist|flowers|realty|realtors?|insurance|fitness|gym|yoga|pilates|pharmacy|clinic|hospital|medical|chiropractic|optometry|veterinary|salons?|barbershop|nails|lash|beauty|cosmetics|apparel|clothing|gallery|studios|cinemas|bowling|lanes|arcade|trampoline|zoo|aquarium|stadium|arena|flags|adventures?|entertainment|productions|photography|designs?|marketing|media|solutions|partners|holdings|enterprises|industries|international|logistics|construction|roofing|plumbing|electric|landscaping|cleaning|catering|wines?|spirits|liquors?|cellars|vineyards?|farms?|nursery|ministries|events|company|inc|llc|pllc|corp|corporation|foundation|orchestra|symphony|rangers|cowboys|mavericks|waterpark|museum|theatre|theater|chamber of commerce|services|motorcars|motors|jewelry|jewelers|credit union|bank|spa|salon|dental|dentistry|orthodontics|massage|distilling|distillery|winery|brewery|bakery|cafe|grill|tacos?|restaurant|cidercade|club|school|university|department|cinema|mall|hotel|resort|academy|association|networking|council|center|centre|group)\b|\bco\.?$|^back 9$|^the\s|'s\b|chicken n pickle/i;
 // Words that are also surnames ("Susan Waters", "Mark Church"), so they only count with another sign
-const ORG_WEAK = /\b(waters|house|inn|gardens?|pie|crawling|pickle|market|shop|studio|air|bowl|golf|wings|stars|network|church|dallas|fort worth|arlington|texas|grand prairie|mansfield)\b/gi;
+const ORG_WEAK = /\b(waters|house|inn|gardens?|pie|crawling|pickle|market|shop|studio|air|bowl|golf|wings|stars|network|church|park|street|ranch|dallas|fort worth|arlington|texas|grand prairie|mansfield)\b/gi;
+
+// Common first names, to tell "Mary Ann Church" (a person) from "Main Street Market" (a business)
+const FIRST_NAMES = new Set(
+  ("aaron adam alan albert alex alexander alice allison amanda amber amy andrea andrew angela ann anna anne annie anthony april ashley " +
+   "barbara becky ben benjamin beth betty beverly bill billy bob bobby bonnie brad bradley brandon brenda brian brittany bruce bryan " +
+   "carl carla carol carolyn carrie catherine cathy charles charlie cheryl chris christina christine christopher cindy claire connie craig crystal cynthia " +
+   "dale dan daniel danielle darlene dave david dawn dean debbie deborah debra denise dennis diana diane don donald donna doris dorothy doug douglas " +
+   "ed eddie edward eileen elizabeth ellen emily emma eric erica erin eugene evelyn frances frank fred gail gary george gerald gina glenda gloria grace greg gregory " +
+   "hannah harold harry heather heidi helen henry holly howard jack jacob jacqueline james jamie jan jane janet janice jason jean jeff jeffrey jennifer jenny jeremy jerry " +
+   "jessica jill jim jimmy jo joan joann joe joel john johnny jon jonathan joseph josh joshua joy joyce juan judith judy julia julie justin karen kate katherine kathleen kathy " +
+   "katie kay keith kelly ken kenneth kevin kim kimberly kristen kristin kyle larry laura lauren lea lee leslie linda lisa lori louis lucy lynn " +
+   "marcus margaret maria marie marilyn mark martha martin mary matt matthew megan melanie melissa michael michelle mike nancy natalie nathan nicholas nicole norma " +
+   "pam pamela pat patricia patrick paul paula peggy peter phil philip phyllis rachel ralph randy ray raymond rebecca regina richard rick rita rob robert robin rodney roger ron ronald rose ruby russell ruth " +
+   "sally sam samantha samuel sandra sandy sara sarah scott sean sharon shawn sheila shirley stacy stephanie stephen steve steven sue susan tammy tara ted teresa terry theresa thomas tim timothy tina todd tom tommy tony tracy travis troy " +
+   "valerie vanessa vicki victoria vincent virginia walter wanda wayne wendy william willie").split(" ")
+);
 
 export function isOrganizationName(n: string): boolean {
-  if (ORG_STRONG.test(n)) return true;
-  // two signs ("Dallas Wings", "Urban Air Arlington"); one alone is more likely a surname
-  return (n.match(ORG_WEAK) ?? []).length >= 2;
+  if (ORG_STRONG.test(n) || BUSINESS.test(n)) return true;
+  const weak = (n.match(ORG_WEAK) ?? []).length;
+  if (weak >= 2) return true; // "Dallas Wings", "Urban Air Arlington"
+  if (weak === 0) return false;
+  // one surname-like word: a short name is a person ("Susan Waters"); a longer one is a business
+  // unless it reads like a person ("Mary Ann Church", "Robert E. House", "Dr. Mark Church")
+  const words = n.replace(/^(dr|mr|mrs|ms|miss)\.?\s+/i, "").split(" ");
+  if (words.length < 3) return false;
+  const personLike =
+    /^(dr|mr|mrs|ms|miss)\.?\s/i.test(n) ||
+    words.some((w) => /^[a-z]\.?$/i.test(w)) ||
+    FIRST_NAMES.has(words[0].toLowerCase().replace(/[^a-z]/g, "")) ||
+    /&|\band\b/i.test(n);
+  return !personLike;
 }
 
 export function personFromName(name: string, email: string): AttendeeRow | null {
@@ -233,13 +260,16 @@ export function parseItems(raw: RawRow[]): OcItem[] {
 export function keepEarlierKeys(items: OcItem[], existing: Map<string, number | null>): OcItem[] {
   const groups = new Map<string, OcItem[]>();
   for (const it of items) groups.set(it.baseKey, [...(groups.get(it.baseKey) ?? []), it]);
-  return items.map((it) => {
-    const g = groups.get(it.baseKey)!;
-    if (g.length < 2 || !existing.has(it.baseKey) || g.some((x) => existing.has(x.key) && x.key !== x.baseKey)) return it;
-    const v = existing.get(it.baseKey) ?? null;
-    const owner = g.find((x) => x.value === v) ?? g[0];
-    return owner === it ? { ...it, key: it.baseKey } : it;
-  });
+  const owners = new Set<OcItem>();
+  for (const [base, g] of Array.from(groups.entries())) {
+    if (g.length < 2 || !existing.has(base)) continue;
+    // rows already saved under their own suffixed key keep it; the bare key goes to one of the rest
+    const rest = g.filter((x) => x.key === base || !existing.has(x.key));
+    if (!rest.length) continue;
+    const v = existing.get(base) ?? null;
+    owners.add(rest.find((x) => x.value === v) ?? rest[0]);
+  }
+  return items.map((it) => (owners.has(it) ? { ...it, key: it.baseKey } : it));
 }
 
 export type Candidate = { pkg: number; score: number; why: string };
@@ -371,6 +401,8 @@ export function buildOneCausePayload(x: BuildInput) {
       event_name: event,
       received_date: pkg?.eventDate ?? dateOf(event),
       notes: it.status === "committed" ? "OneCause status: committed (promised; check that it was received)." : null,
+      // placed by staff on the review list, so later imports leave its package alone
+      reviewed: !!it.donor && l.chosen === null,
     });
   }
   return { packages, items, latest };

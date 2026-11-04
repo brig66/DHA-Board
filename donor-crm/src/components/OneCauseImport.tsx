@@ -66,19 +66,23 @@ export default function OneCauseImport({
   // What an earlier OneCause import already brought in. Those items keep the package and
   // event they have in the CRM, and an event imported before keeps its CRM name.
   const [existing, setExisting] = useState<Map<string, number | null> | null>(null);
+  const [placed, setPlaced] = useState<Set<string>>(new Set());
   useEffect(() => {
     let live = true;
     (async () => {
       const { data } = await createClient()
         .from("inkind_items")
-        .select("import_key, onecause_key, event_name, fair_market_value")
+        .select("import_key, onecause_key, event_name, fair_market_value, package_id, package_locked")
         .or("import_key.like.oc-*,onecause_key.not.is.null")
         .range(0, 9999);
       if (!live) return;
-      const rows = ((data ?? []) as { import_key: string | null; onecause_key: string | null; event_name: string; fair_market_value: number | null }[])
+      type Row = { import_key: string | null; onecause_key: string | null; event_name: string; fair_market_value: number | null; package_id: string | null; package_locked: boolean };
+      const rows = ((data ?? []) as Row[])
         .map((r) => ({ ...r, import_key: r.onecause_key ?? r.import_key }))
         .filter((r) => typeof r.import_key === "string" && r.import_key.startsWith("oc-"));
       const m = new Map<string, string>(rows.map((r) => [r.import_key as string, r.event_name]));
+      // items already in a package, or whose package staff chose, aren't asked about again
+      setPlaced(new Set(rows.filter((r) => r.package_id || r.package_locked).map((r) => r.import_key as string)));
       setExisting(new Map(rows.map((r) => [r.import_key as string, r.fair_market_value === null ? null : Number(r.fair_market_value)])));
       setEventMap((cur) => {
         const next = { ...cur };
@@ -96,7 +100,7 @@ export default function OneCauseImport({
   // items keep the keys they were saved under, and are matched once the CRM has answered
   const items = useMemo(() => (existing ? keepEarlierKeys(parsedItems, existing) : parsedItems), [parsedItems, existing]);
   const links = useMemo(() => linkItems(items, pkgs), [items, pkgs]);
-  const already = (it: OcItem) => !!existing?.has(it.key);
+  const already = (it: OcItem) => placed.has(it.key);
   const [progress, setProgress] = useState<string | null>(null);
   const [itemsOnlyEvent, setItemsOnlyEvent] = useState(knownEvents.find((e) => /love that smile/i.test(e)) ?? "");
   const [label, setLabel] = useState("OneCause export");

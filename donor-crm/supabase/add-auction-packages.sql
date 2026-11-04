@@ -22,6 +22,9 @@ alter table public.inkind_items add column if not exists procurement_status text
 -- the OneCause key of an item first added by another import, which keeps its own key in import_key
 alter table public.inkind_items add column if not exists onecause_key text;
 create index if not exists inkind_items_onecause_key_idx on public.inkind_items (onecause_key);
+-- true once staff chose an item's package (on the In-Kind tab or the import's review list);
+-- an import never moves such an item into or out of a package after that
+alter table public.inkind_items add column if not exists package_locked boolean not null default false;
 create index if not exists inkind_items_package_idx on public.inkind_items (package_id);
 
 do $$
@@ -124,7 +127,7 @@ begin
   if v_id is null then
     insert into public.inkind_items (event_name, item_number, title, description, sale_type, is_service,
       donor_contact_id, fair_market_value, received_date, buyer_contact_id, bidder_number, sold_amount, sold_date,
-      notes, source, is_package, package_id)
+      notes, source, is_package, package_id, package_locked)
     values (v_event, nullif(trim(coalesce(p ->> 'item_number', '')), ''), v_title,
       nullif(trim(coalesce(p ->> 'description', '')), ''), v_sale, coalesce((p ->> 'is_service')::boolean, false),
       v_donor, nullif(p ->> 'fair_market_value', '')::numeric,
@@ -133,7 +136,7 @@ begin
       case when v_package is null then nullif(trim(coalesce(p ->> 'bidder_number', '')), '') end,
       case when v_package is null then nullif(p ->> 'sold_amount', '')::numeric end,
       case when v_package is null then nullif(p ->> 'sold_date', '')::date end,
-      nullif(trim(coalesce(p ->> 'notes', '')), ''), 'Entered by staff', v_is_package, v_package)
+      nullif(trim(coalesce(p ->> 'notes', '')), ''), 'Entered by staff', v_is_package, v_package, v_package is not null)
     returning id into v_id;
   else
     update public.inkind_items set
@@ -154,6 +157,7 @@ begin
       notes = nullif(trim(coalesce(p ->> 'notes', '')), ''),
       is_package = v_is_package,
       package_id = v_package,
+      package_locked = package_locked or package_id is distinct from v_package,
       updated_at = now()
     where id = v_id;
     if not found then
@@ -168,9 +172,10 @@ $$;
 
 
 -- ---------------------------------------------------------------------------
--- Finding the person on an imported row. A row with no first name (a business,
--- or just an email) belongs to whoever already has that email, so a donor
--- listed under a business-sounding name isn't added a second time.
+-- Finding the person on an imported row. A business row matches the same
+-- business first; failing that, a row with no first name (a business, or just
+-- an email) belongs to whoever already has that email, so a donor listed under
+-- a business-sounding name isn't added a second time.
 -- ---------------------------------------------------------------------------
 create or replace function public.import_contact(r jsonb, out contact_id uuid, out created boolean)
 language plpgsql
@@ -180,6 +185,18 @@ declare
   v_email text := nullif(lower(trim(coalesce(r ->> 'email', ''))), '');
 begin
   created := false;
+  -- a business: the same business by name or email first
+  if coalesce(trim(r ->> 'first_name'), '') = '' and coalesce(trim(r ->> 'last_name'), '') <> '' then
+    select c.id into contact_id from public.contacts c
+    where not c.is_anonymous and c.first_name = ''
+      and (regexp_replace(lower(c.last_name), '[^a-z0-9]', '', 'g') = regexp_replace(lower(r ->> 'last_name'), '[^a-z0-9]', '', 'g')
+           or public.contact_has_email(c, v_email))
+    order by c.created_at limit 1;
+    if contact_id is not null then
+      return;
+    end if;
+  end if;
+  -- no first name (a business not found above, or just an email): whoever has that email
   if coalesce(trim(r ->> 'first_name'), '') = '' and v_email is not null then
     select c.id into contact_id from public.contacts c
     where not c.is_anonymous and lower(c.email) = v_email
@@ -206,8 +223,9 @@ $$;
 --
 -- On a repeat import, OneCause updates the sale and the donation: buyers,
 -- prices, market values, donors and procurement status. What staff set in the
--- CRM stays: names, descriptions, events, which package an item is in, notes,
--- and a lot staff turned into a single item (or the reverse).
+-- CRM stays: names, descriptions, events, notes, a package staff chose for an
+-- item, and a lot staff turned into a single item (or the reverse). An item
+-- not yet in any package is put in the one it sold in.
 -- ---------------------------------------------------------------------------
 drop function if exists public.import_onecause(jsonb, jsonb, text);
 create or replace function public.import_onecause(packages jsonb, items jsonb, source_label text default 'OneCause',
@@ -229,6 +247,8 @@ declare
   v_value numeric;
   v_link boolean;
   v_adopted boolean;
+  v_lot public.inkind_items;
+  v_reviewed boolean;
   v_keys text[];
   p_added int := 0; p_updated int := 0; i_added int := 0; i_updated int := 0;
   new_people int := 0; matched int := 0; flagged int := 0;
@@ -300,14 +320,24 @@ begin
       if v_created then new_people := new_people + 1; else matched := matched + 1; end if;
     end if;
     v_pkg := null;
+    v_lot := null;
     if coalesce(r ->> 'package_key', '') <> '' then
       select * into v_pkg from public.inkind_items where import_key = r ->> 'package_key' and is_package;
+      if v_pkg.id is null then
+        -- staff made this lot a single item: that item is this donated item
+        select * into v_lot from public.inkind_items where import_key = r ->> 'package_key' and not is_package;
+      end if;
     end if;
-    v_event := coalesce(v_pkg.event_name, nullif(trim(coalesce(r ->> 'event_name', '')), ''), 'In-kind donation');
+    v_event := coalesce(v_pkg.event_name, v_lot.event_name, nullif(trim(coalesce(r ->> 'event_name', '')), ''), 'In-kind donation');
     v_value := nullif(r ->> 'fair_market_value', '')::numeric;
+    v_reviewed := coalesce((r ->> 'reviewed')::boolean, false);
 
     v_adopted := false;
     select * into v_cur from public.inkind_items where import_key = r ->> 'key' or onecause_key = r ->> 'key' limit 1;
+    if v_cur.id is null and v_lot.id is not null and v_lot.onecause_key is null then
+      update public.inkind_items set onecause_key = r ->> 'key' where id = v_lot.id;
+      select * into v_cur from public.inkind_items where id = v_lot.id;
+    end if;
     -- Not from an earlier OneCause import under this key: the same gift may already be here from
     -- a gift spreadsheet, another item list, or an older export. Take it over only when it is
     -- clearly the same gift: same donor, event and name (or an unnamed "In-kind gift" of the same
@@ -339,11 +369,11 @@ begin
 
     if v_cur.id is null then
       insert into public.inkind_items (event_name, title, description, sale_type, donor_contact_id, fair_market_value,
-        received_date, package_id, procurement_status, notes, source, import_key)
+        received_date, package_id, procurement_status, notes, source, import_key, package_locked)
       values (v_event, v_title, nullif(trim(coalesce(r ->> 'description', '')), ''), v_pkg.sale_type,
         v_person, v_value, nullif(r ->> 'received_date', '')::date, v_pkg.id,
         nullif(trim(coalesce(r ->> 'procurement_status', '')), ''), nullif(trim(coalesce(r ->> 'notes', '')), ''),
-        source_label, r ->> 'key')
+        source_label, r ->> 'key', v_reviewed)
       returning id into v_id;
       i_added := i_added + 1;
     elsif v_cur.is_package then
@@ -351,9 +381,10 @@ begin
       continue;
     else
       v_id := v_cur.id;
-      -- An item already imported keeps the package staff left it in (or out of). Only a gift
-      -- just taken over from another record is put in its package.
-      v_link := v_adopted and v_cur.package_id is null and v_pkg.id is not null
+      -- An item not yet in a package goes into the one it sold in (for example when the Items
+      -- Report was imported before the Auction Proceeds), unless staff chose its package
+      -- themselves or it was sold on its own. An item already in a package stays there.
+      v_link := not v_cur.package_locked and v_cur.package_id is null and v_pkg.id is not null
                 and v_cur.buyer_contact_id is null and v_cur.sold_amount is null;
       update public.inkind_items set
         description = coalesce(description, nullif(trim(coalesce(r ->> 'description', '')), '')),
@@ -365,6 +396,7 @@ begin
         received_date = case when v_link then coalesce(nullif(r ->> 'received_date', '')::date, received_date)
                              else coalesce(received_date, nullif(r ->> 'received_date', '')::date) end,
         procurement_status = coalesce(nullif(trim(coalesce(r ->> 'procurement_status', '')), ''), procurement_status),
+        package_locked = package_locked or v_reviewed,
         updated_at = now()
       where id = v_id;
       i_updated := i_updated + 1;
