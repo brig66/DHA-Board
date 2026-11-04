@@ -38,14 +38,14 @@ export const tokens = (s: string) =>
 
 // Words that only a business, school, team or organization would have in its name
 const ORG_STRONG =
-  /\b(company|inc|llc|pllc|corp|corporation|foundation|orchestra|symphony|rangers|cowboys|mavericks|waterpark|museum|theatre|theater|chamber of commerce|services|motorcars|motors|jewelry|jewelers|credit union|bank|spa|salon|dental|dentistry|orthodontics|massage|distilling|distillery|winery|brewery|bakery|cafe|grill|tacos?|restaurant|cidercade|club|school|university|department|cinema|mall|hotel|resort|academy|association|networking|council|center|centre|group)\b|\bco\.?$|^back 9$|^the\s|'s\b/i;
+  /\b(company|inc|llc|pllc|corp|corporation|foundation|orchestra|symphony|rangers|cowboys|mavericks|waterpark|museum|theatre|theater|chamber of commerce|services|motorcars|motors|jewelry|jewelers|credit union|bank|spa|salon|dental|dentistry|orthodontics|massage|distilling|distillery|winery|brewery|bakery|cafe|grill|tacos?|restaurant|cidercade|club|school|university|department|cinema|mall|hotel|resort|academy|association|networking|council|center|centre|group)\b|\bco\.?$|^back 9$|^the\s|'s\b|chicken n pickle/i;
 // Words that are also surnames ("Susan Waters", "Mark Church"), so they only count with another sign
 const ORG_WEAK = /\b(waters|house|inn|gardens?|pie|crawling|pickle|market|shop|studio|air|bowl|golf|wings|stars|network|church|dallas|fort worth|arlington|texas|grand prairie|mansfield)\b/gi;
 
 export function isOrganizationName(n: string): boolean {
   if (ORG_STRONG.test(n)) return true;
-  const weak = (n.match(ORG_WEAK) ?? []).length;
-  return weak >= 2 || (weak >= 1 && n.split(" ").length >= 3 && !/&|\band\b/i.test(n));
+  // two signs ("Dallas Wings", "Urban Air Arlington"); one alone is more likely a surname
+  return (n.match(ORG_WEAK) ?? []).length >= 2;
 }
 
 export function personFromName(name: string, email: string): AttendeeRow | null {
@@ -65,8 +65,9 @@ export function personFromName(name: string, email: string): AttendeeRow | null 
 
 /** "15 Jun 24 18:00 CDT" -> "2024-06-15". Also takes a date cell from an .xlsx file. */
 export function ocDate(v: unknown): string | null {
+  // spreadsheet date cells arrive as midnight UTC, so read them in UTC (local time would be a day early)
   if (v instanceof Date && !isNaN(v.getTime()))
-    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+    return `${v.getUTCFullYear()}-${String(v.getUTCMonth() + 1).padStart(2, "0")}-${String(v.getUTCDate()).padStart(2, "0")}`;
   const s = str(v);
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
@@ -107,6 +108,7 @@ export type OcPackage = {
 
 export type OcItem = {
   key: string;
+  baseKey: string; // the key before any suffix that tells same-named rows apart
   title: string;
   value: number | null;
   quantity: number;
@@ -206,6 +208,7 @@ export function parseItems(raw: RawRow[]): OcItem[] {
     const unit = money(get(r, "Value"));
     out.push({
       key,
+      baseKey: key,
       title: qty > 1 ? `${title} (${qty})` : title,
       value: unit && unit > 0 ? Math.round(unit * qty * 100) / 100 : null,
       quantity: qty,
@@ -220,6 +223,23 @@ export function parseItems(raw: RawRow[]): OcItem[] {
   // the same item, lot and donor in two different years is told apart by its value and description
   settleKeys(out, (i) => `${i.value ?? ""} ${i.quantity} ${i.description.slice(0, 80)}`);
   return out;
+}
+
+/**
+ * An item that was the only one of its name in an earlier export keeps the key it was saved
+ * under, even after a same-named item from a later year shows up. Takes the keys already in
+ * the CRM, with each one's market value, and gives the bare key back to the matching row.
+ */
+export function keepEarlierKeys(items: OcItem[], existing: Map<string, number | null>): OcItem[] {
+  const groups = new Map<string, OcItem[]>();
+  for (const it of items) groups.set(it.baseKey, [...(groups.get(it.baseKey) ?? []), it]);
+  return items.map((it) => {
+    const g = groups.get(it.baseKey)!;
+    if (g.length < 2 || !existing.has(it.baseKey) || g.some((x) => existing.has(x.key) && x.key !== x.baseKey)) return it;
+    const v = existing.get(it.baseKey) ?? null;
+    const owner = g.find((x) => x.value === v) ?? g[0];
+    return owner === it ? { ...it, key: it.baseKey } : it;
+  });
 }
 
 export type Candidate = { pkg: number; score: number; why: string };
@@ -246,7 +266,7 @@ export function linkItems(items: OcItem[], pkgs: OcPackage[]): Link[] {
       let score = 0;
       const why: string[] = [];
       if (donorHits) { score += 2 + donorHits; why.push("donor listed"); }
-      if (titleShare >= 0.5) { score += 3; why.push("name matches"); }
+      if ((titleShare >= 0.5 && titleHits >= 2) || (titleShare === 1 && titleHits >= 1)) { score += 3; why.push("name matches"); }
       else if (titleHits) { score += titleHits; why.push("name partly matches"); }
       return { pkg: pi, score, why: why.join(", ") };
     });

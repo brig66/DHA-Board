@@ -19,6 +19,9 @@
 alter table public.inkind_items add column if not exists is_package boolean not null default false;
 alter table public.inkind_items add column if not exists package_id uuid references public.inkind_items (id) on delete set null;
 alter table public.inkind_items add column if not exists procurement_status text;
+-- the OneCause key of an item first added by another import, which keeps its own key in import_key
+alter table public.inkind_items add column if not exists onecause_key text;
+create index if not exists inkind_items_onecause_key_idx on public.inkind_items (onecause_key);
 create index if not exists inkind_items_package_idx on public.inkind_items (package_id);
 
 do $$
@@ -163,6 +166,37 @@ begin
 end;
 $$;
 
+
+-- ---------------------------------------------------------------------------
+-- Finding the person on an imported row. A row with no first name (a business,
+-- or just an email) belongs to whoever already has that email, so a donor
+-- listed under a business-sounding name isn't added a second time.
+-- ---------------------------------------------------------------------------
+create or replace function public.import_contact(r jsonb, out contact_id uuid, out created boolean)
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_email text := nullif(lower(trim(coalesce(r ->> 'email', ''))), '');
+begin
+  created := false;
+  if coalesce(trim(r ->> 'first_name'), '') = '' and v_email is not null then
+    select c.id into contact_id from public.contacts c
+    where not c.is_anonymous and lower(c.email) = v_email
+    order by c.created_at limit 1;
+    if contact_id is null then
+      select c.id into contact_id from public.contacts c
+      where not c.is_anonymous and public.contact_has_email(c, v_email)
+      order by c.created_at limit 1;
+    end if;
+    if contact_id is not null then
+      return;
+    end if;
+  end if;
+  select f.contact_id, f.created into contact_id, created from public.contact_for_row(r, null) f;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- OneCause import: packages (Auction Proceeds) and donated items (Items Report)
 --
@@ -194,6 +228,7 @@ declare
   v_event text;
   v_value numeric;
   v_link boolean;
+  v_adopted boolean;
   v_keys text[];
   p_added int := 0; p_updated int := 0; i_added int := 0; i_updated int := 0;
   new_people int := 0; matched int := 0; flagged int := 0;
@@ -271,23 +306,34 @@ begin
     v_event := coalesce(v_pkg.event_name, nullif(trim(coalesce(r ->> 'event_name', '')), ''), 'In-kind donation');
     v_value := nullif(r ->> 'fair_market_value', '')::numeric;
 
-    select * into v_cur from public.inkind_items where import_key = r ->> 'key';
+    v_adopted := false;
+    select * into v_cur from public.inkind_items where import_key = r ->> 'key' or onecause_key = r ->> 'key' limit 1;
     -- Not from an earlier OneCause import under this key: the same gift may already be here from
-    -- a gift spreadsheet, another item list, or an older export whose lot number changed. Take it
-    -- over (same donor and event, and the same name, or the same value for a row OneCause didn't add).
+    -- a gift spreadsheet, another item list, or an older export. Take it over only when it is
+    -- clearly the same gift: same donor, event and name (or an unnamed "In-kind gift" of the same
+    -- value), not sold on its own, not a lot, and not claimed by another OneCause row.
     if v_cur.id is null and v_person is not null then
       select * into v_cur from public.inkind_items i
       where not i.is_package
         and i.donor_contact_id = v_person
         and i.event_name = v_event
-        and (i.import_key is null or not (i.import_key = any (v_keys)))
+        and i.buyer_contact_id is null and i.sold_amount is null
+        and i.onecause_key is null
+        and (i.import_key is null
+             or (i.import_key like 'oc-item|%' and not (i.import_key = any (v_keys)))
+             or i.import_key not like 'oc-%')
         and (lower(trim(i.title)) in (lower(v_title), lower(regexp_replace(v_title, '\s*\(\d+\)$', '')))
-             or (v_value is not null and i.fair_market_value = v_value
-                 and (i.import_key is null or i.import_key not like 'oc-item|%')))
+             or (lower(trim(i.title)) = 'in-kind gift' and v_value is not null and i.fair_market_value = v_value))
       order by (lower(trim(i.title)) = lower(v_title)) desc, i.created_at
       limit 1;
       if v_cur.id is not null then
-        update public.inkind_items set import_key = r ->> 'key', title = v_title where id = v_cur.id;
+        v_adopted := true;
+        -- another import's key stays, so that import still finds its row; OneCause's goes alongside
+        update public.inkind_items set
+          import_key = case when import_key is null or import_key like 'oc-item|%' then r ->> 'key' else import_key end,
+          onecause_key = case when import_key is null or import_key like 'oc-item|%' then null else r ->> 'key' end,
+          title = case when lower(trim(title)) = 'in-kind gift' then v_title else title end
+        where id = v_cur.id;
       end if;
     end if;
 
@@ -305,8 +351,9 @@ begin
       continue;
     else
       v_id := v_cur.id;
-      -- put it in its package only if it isn't in one yet and wasn't sold on its own
-      v_link := v_cur.package_id is null and v_pkg.id is not null
+      -- An item already imported keeps the package staff left it in (or out of). Only a gift
+      -- just taken over from another record is put in its package.
+      v_link := v_adopted and v_cur.package_id is null and v_pkg.id is not null
                 and v_cur.buyer_contact_id is null and v_cur.sold_amount is null;
       update public.inkind_items set
         description = coalesce(description, nullif(trim(coalesce(r ->> 'description', '')), '')),
@@ -339,4 +386,5 @@ revoke execute on function public.save_inkind_item(jsonb) from anon, public;
 revoke execute on function public.import_onecause(jsonb, jsonb, text, text[]) from anon, public;
 revoke execute on function public.inkind_items_package_rules() from anon, public;
 revoke execute on function public.inkind_items_package_gift() from anon, public;
+revoke execute on function public.import_contact(jsonb) from anon, public;
 grant execute on function public.save_inkind_item(jsonb), public.import_onecause(jsonb, jsonb, text, text[]) to authenticated;
