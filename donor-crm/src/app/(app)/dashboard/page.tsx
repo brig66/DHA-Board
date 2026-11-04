@@ -20,7 +20,10 @@ type Gift = {
   thanked_method: string | null;
   thanked_by_name: string | null;
 };
-type ItemLite = { donation_id: string | null; event_name: string; sold_amount: number | null; fair_market_value: number | null };
+type ItemLite = {
+  id: string; donation_id: string | null; event_name: string; sold_amount: number | null; fair_market_value: number | null;
+  is_package: boolean; package_id: string | null;
+};
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -38,7 +41,7 @@ export default function DashboardPage() {
         fetchAllContacts(supabase),
         fetchAll<Gift>(supabase, "donations", "id, contact_id, gift_date, amount, event_name, gift_type, thanked_on, thanked_method, thanked_by_name"),
         fetchAll<EmailLite>(supabase, "email_log", "contact_id, sent_at, subject, template_name, status"),
-        fetchAll<ItemLite>(supabase, "inkind_items", "donation_id, event_name, sold_amount, fair_market_value"),
+        fetchAll<ItemLite>(supabase, "inkind_items", "id, donation_id, event_name, sold_amount, fair_market_value, is_package, package_id"),
       ]);
       setContacts(c);
       setGifts(g);
@@ -59,14 +62,16 @@ export default function DashboardPage() {
     const byId = new Map(contacts.map((c) => [c.id, c]));
     const named = contacts.filter((c) => !c.is_anonymous);
 
-    // An auction item counts once in "Total raised": at what it sold for once
-    // it sells (the buyer's payment), or at its market value until then. Its
-    // donor's in-kind gift carries the market value; an item with no donor
-    // recorded yet is counted here directly.
-    const soldGiftIds = new Set(items.filter((i) => i.sold_amount !== null && i.donation_id).map((i) => i.donation_id!));
+    // Auction items count once in "Total raised": at what they sold for once
+    // they sell (the buyer's payment, on the item or on the package it was
+    // sold in), or at their market value (the donor's in-kind gift) until then.
+    const pkgById = new Map(items.filter((i) => i.is_package).map((i) => [i.id, i]));
+    const soldVia = (i: ItemLite) => i.sold_amount !== null || (!!i.package_id && pkgById.get(i.package_id)?.sold_amount != null);
+    const soldGiftIds = new Set(items.filter((i) => i.donation_id && soldVia(i)).map((i) => i.donation_id!));
     const counted = gifts.filter((g) => !soldGiftIds.has(g.id));
     const auctionSales = items.reduce((s, i) => s + Number(i.sold_amount ?? 0), 0);
-    const unsoldNoGift = items.filter((i) => i.sold_amount === null && !i.donation_id);
+    // items with no donor yet that haven't sold count at their value directly
+    const unsoldNoGift = items.filter((i) => !i.is_package && !i.donation_id && !soldVia(i));
     const total =
       counted.reduce((s, g) => s + Number(g.amount), 0) +
       auctionSales +
@@ -87,7 +92,8 @@ export default function DashboardPage() {
     }
     for (const i of items) {
       if (i.sold_amount === null) {
-        if (!i.donation_id && Number(i.fair_market_value ?? 0) > 0) ev(i.event_name).total += Number(i.fair_market_value);
+        if (!i.is_package && !i.donation_id && !soldVia(i) && Number(i.fair_market_value ?? 0) > 0)
+          ev(i.event_name).total += Number(i.fair_market_value);
         continue;
       }
       const e = ev(i.event_name);
