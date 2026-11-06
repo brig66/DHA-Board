@@ -10,6 +10,8 @@ import { todayLocal } from "@/lib/thanks";
 import { ackDeadlinePassed } from "@/lib/onecause";
 import ContactPicker, { type PickerContact } from "@/components/ContactPicker";
 import EmailPreview from "@/components/EmailPreview";
+import ExtraRecipients, { copiesOk } from "@/components/ExtraRecipients";
+import { NO_COPIES, checkCopies, copiesPayload, describeCopies, type Copies } from "@/lib/recipients";
 import {
   LETTER_TEMPLATE_NAME,
   defaultMessage,
@@ -24,7 +26,7 @@ import { buildEmailHtml, htmlToText } from "../../../../supabase/functions/_shar
 import { SALE_TYPES, THANK_METHODS, type ContactSummary, type InkindItem, type LetterKind, type Settings } from "@/lib/types";
 
 type GiftLite = { id: string; thanked_on: string | null; thanked_method: string | null };
-type SendResult = { sent: number; failed: number; skipped: number; results: { status: string; error?: string }[] };
+type SendResult = { sent: number; failed: number; skipped: number; results: { status: string; error?: string; copy_errors?: string[] }[] };
 
 type Draft = {
   id: string | null;
@@ -95,6 +97,7 @@ function InKind() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [compose, setCompose] = useState<{ kind: LetterKind; subject: string; text: string } | null>(null);
+  const [copies, setCopies] = useState<Copies>(NO_COPIES);
   const [sending, setSending] = useState<string | null>(null);
   const [thank, setThank] = useState<{ method: string; on: string } | null>(null);
   const formRef = useRef<HTMLDivElement>(null);
@@ -276,6 +279,7 @@ function InKind() {
       subject: defaultSubject(kind, ev),
       text: defaultMessage(kind, org, settings?.letter_signer_name ?? "", settings?.letter_signer_title ?? ""),
     });
+    setCopies(NO_COPIES);
     setMessage(null);
     setError(null);
   }
@@ -305,6 +309,8 @@ function InKind() {
         template_name: LETTER_TEMPLATE_NAME[kind],
         test_to: testTo,
         batch_id: batchId,
+        // tests go only to the person testing
+        ...(testTo ? {} : copiesPayload(checkCopies(copies))),
       },
     });
     if (error) {
@@ -347,7 +353,14 @@ function InKind() {
     const targets = gs.filter((g) => canEmail(g.contact));
     if (!targets.length) return;
     const what = compose.kind === "inkind_ack" ? "thank-you letter" : "receipt";
-    if (!confirm(`Email a ${what} to ${targets.length} ${targets.length === 1 ? "person" : "people"}? Each one gets their own copy.`)) return;
+    const copyLine = describeCopies(checkCopies(copies));
+    if (
+      !confirm(
+        `Email a ${what} to ${targets.length} ${targets.length === 1 ? "person" : "people"}? Each one gets their own copy.` +
+          (copyLine ? `\n\n${copyLine}` : "")
+      )
+    )
+      return;
     const batchId = crypto.randomUUID();
     let sent = 0;
     const problems: string[] = [];
@@ -357,6 +370,7 @@ function InKind() {
         const r = await sendOne(compose.kind, g, null, batchId);
         if (r.sent) sent++;
         else problems.push(`${fullName(g.contact)}: ${r.results[0]?.error ?? r.results[0]?.status ?? "not sent"}`);
+        for (const ce of r.results[0]?.copy_errors ?? []) problems.push(`${fullName(g.contact)}: ${ce}`);
       } catch (e) {
         problems.push(`${fullName(g.contact)}: ${(e as Error).message}`);
       }
@@ -750,6 +764,7 @@ function InKind() {
           })()}
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="flex flex-col gap-3">
+              <ExtraRecipients value={copies} onChange={setCopies} emails={composeEmailable.length} />
               <div>
                 <label className="label">Subject</label>
                 <input className="input mt-1" value={compose.subject} onChange={(e) => setCompose({ ...compose, subject: e.target.value })} />
@@ -768,7 +783,7 @@ function InKind() {
                 <button className="btn btn-secondary" disabled={!!sending || !me} onClick={sendTest}>
                   {sending === "test" ? "Sending…" : "Send a test to me"}
                 </button>
-                <button className="btn btn-primary" disabled={!!sending || !composeEmailable.length} onClick={sendAll}>
+                <button className="btn btn-primary" disabled={!!sending || !composeEmailable.length || !copiesOk(copies)} onClick={sendAll}>
                   {sending && sending !== "test" ? `Sending ${sending}…` : `Send ${composeEmailable.length} email${composeEmailable.length === 1 ? "" : "s"}`}
                 </button>
                 <button className="btn btn-secondary" disabled={!!sending} onClick={() => setCompose(null)}>Cancel</button>
@@ -776,6 +791,19 @@ function InKind() {
             </div>
             <div>
               <span className="label">Preview{previewGroup ? ` for ${fullName(previewGroup.contact)}` : ""}</span>
+              {(() => {
+                const c = checkCopies(copies);
+                if (!c.any || !previewGroup) return null;
+                return (
+                  <div className="muted mt-1 text-xs">
+                    To: {fullName(previewGroup.contact)}
+                    {previewGroup.contact.email ? ` <${previewGroup.contact.email}>` : ""}
+                    {c.also_to.length > 0 && <>, {c.also_to.join(", ")}</>}
+                    {c.cc.length > 0 && <div>Cc: {c.cc.join(", ")}</div>}
+                    {c.bcc.length > 0 && <div>Bcc (separate copies, not shown to the donor): {c.bcc.join(", ")}</div>}
+                  </div>
+                );
+              })()}
               {previewHtml && <EmailPreview className="mt-1 block w-full rounded border border-[var(--border)]" html={previewHtml} />}
             </div>
           </div>

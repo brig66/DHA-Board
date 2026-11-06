@@ -79,15 +79,19 @@ async function handleEvent(e: any) {
 
   let { data: log } = await admin
     .from("email_log")
-    .select("id, delivery_status")
+    .select("id, delivery_status, to_email")
     .eq("provider_id", providerId)
     .maybeSingle();
   if (!log) {
     // the report can arrive a moment before the send is written down
     await new Promise((r) => setTimeout(r, 2500));
-    ({ data: log } = await admin.from("email_log").select("id, delivery_status").eq("provider_id", providerId).maybeSingle());
+    ({ data: log } = await admin.from("email_log").select("id, delivery_status, to_email").eq("provider_id", providerId).maybeSingle());
   }
   if (!log) return;
+  // An email with people copied on it gets a report for each address. Only the donor's own
+  // count: someone else's bounce, spam report or unsubscribe says nothing about the donor.
+  const rcpt = String(e.rcpt ?? e.recipient ?? "").trim().toLowerCase().replace(/^.*<([^>]+)>.*$/, "$1");
+  if (rcpt && log.to_email && rcpt !== String(log.to_email).trim().toLowerCase()) return;
 
   const when = e.time ? new Date(e.time).toISOString() : new Date().toISOString();
   const detail = [e.bounce ? `${e.bounce} bounce` : "", e.context ?? e.message ?? e.reason ?? e.response ?? ""]

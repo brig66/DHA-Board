@@ -11,13 +11,15 @@ import type { ContactSummary, EmailTemplate, Settings } from "@/lib/types";
 import type { Editor } from "@tiptap/react";
 import EmailEditor from "@/components/EmailEditor";
 import EmailPreview from "@/components/EmailPreview";
+import ExtraRecipients, { copiesOk } from "@/components/ExtraRecipients";
+import { NO_COPIES, checkCopies, copiesPayload, describeCopies, type Copies } from "@/lib/recipients";
 import { buildEmailHtml, hasContent, htmlToText, textToHtml } from "../../../../supabase/functions/_shared/email-html";
 
 type SendResult = {
   sent: number;
   failed: number;
   skipped: number;
-  results: { contact_id: string; name: string; email: string | null; status: string; error?: string }[];
+  results: { contact_id: string; name: string; email: string | null; status: string; error?: string; copy_errors?: string[] }[];
 };
 
 export default function EmailPage() {
@@ -44,6 +46,8 @@ function Composer() {
   const [message, setMessage] = useState<{ kind: "good" | "bad"; text: string } | null>(null);
   const [result, setResult] = useState<SendResult | null>(null);
   const [addEvent, setAddEvent] = useState("");
+  const [copies, setCopies] = useState<Copies>(NO_COPIES);
+  const checkedCopies = checkCopies(copies);
 
   const loadTemplates = async () => {
     const { data } = await createClient().from("email_templates").select("*").order("name");
@@ -107,6 +111,7 @@ function Composer() {
   // pictures still embedded in the message (not yet saved) would be blocked by email programs
   const unsavedPictures = /<img[^>]+src="(data|blob):/i.test(html);
   const ready = !!subject.trim() && hasContent(html) && !unsavedPictures;
+  const sendReady = ready && copiesOk(copies); // a typo in a copy address only holds up the real send
 
   async function callSend(contactIds: string[], testTo: string | null, batchId: string | null = null) {
     const supabase = createClient();
@@ -119,6 +124,8 @@ function Composer() {
         template_name: templates.find((t) => t.id === templateId)?.name ?? null,
         test_to: testTo,
         batch_id: batchId,
+        // tests go only to the person testing
+        ...(testTo ? {} : copiesPayload(checkedCopies)),
       },
     });
     if (error) {
@@ -149,7 +156,14 @@ function Composer() {
   }
 
   async function sendAll() {
-    if (!confirm(`Send this email to ${sendable.length} donor${sendable.length === 1 ? "" : "s"}? Each one gets their own copy.`)) return;
+    const copyLine = describeCopies(checkedCopies);
+    if (
+      !confirm(
+        `Send this email to ${sendable.length} donor${sendable.length === 1 ? "" : "s"}? Each one gets their own copy.` +
+          (copyLine ? `\n\n${copyLine}` : "")
+      )
+    )
+      return;
     setBusy("send");
     setMessage(null);
     setResult(null);
@@ -292,6 +306,7 @@ function Composer() {
             <button className="btn btn-secondary btn-sm" onClick={() => saveTemplate(true)} disabled={!ready}>Save as new</button>
             {templateId && <button className="btn btn-danger btn-sm" onClick={deleteTemplate}>Delete</button>}
           </div>
+          <ExtraRecipients value={copies} onChange={setCopies} emails={sendable.length} />
           <div>
             <label className="label">Subject</label>
             <input className="input mt-1" value={subject} onChange={(e) => setSubject(e.target.value)} />
@@ -330,7 +345,14 @@ function Composer() {
           </div>
           {preview ? (
             <div className="rounded-lg border border-[var(--border)] bg-white p-4 text-sm">
-              <div className="muted text-xs">To: {fullName(preview)} &lt;{preview.email}&gt;</div>
+              <div className="muted text-xs">
+                To: {fullName(preview)} &lt;{preview.email}&gt;
+                {checkedCopies.also_to.length > 0 && <>, {checkedCopies.also_to.join(", ")}</>}
+              </div>
+              {checkedCopies.cc.length > 0 && <div className="muted text-xs">Cc: {checkedCopies.cc.join(", ")}</div>}
+              {checkedCopies.bcc.length > 0 && (
+                <div className="muted text-xs">Bcc (separate copies, not shown to the donor): {checkedCopies.bcc.join(", ")}</div>
+              )}
               <div className="mt-1 font-semibold">{fillMergeFields(subject, preview) || "(no subject)"}</div>
               <hr className="my-3 border-[var(--border)]" />
               <EmailPreview
@@ -346,7 +368,7 @@ function Composer() {
             <button className="btn btn-secondary" onClick={sendTest} disabled={!!busy || !preview || !ready}>
               {busy === "test" ? "Sending test…" : `Send a test to me`}
             </button>
-            <button className="btn btn-primary" onClick={sendAll} disabled={!!busy || !sendable.length || !ready}>
+            <button className="btn btn-primary" onClick={sendAll} disabled={!!busy || !sendable.length || !sendReady}>
               {busy === "send" ? "Sending…" : `Send to ${sendable.length} donor${sendable.length === 1 ? "" : "s"}`}
             </button>
           </div>
@@ -363,6 +385,9 @@ function Composer() {
               {result.skipped > 0 && <>, {result.skipped} skipped</>}.
               {result.results.filter((r) => r.status !== "sent").map((r) => (
                 <div key={r.contact_id} className="muted text-xs">{r.name}: {r.error}</div>
+              ))}
+              {result.results.filter((r) => r.copy_errors?.length).map((r) => (
+                <div key={`${r.contact_id}-copy`} className="text-xs text-coral-600">{r.name}: {r.copy_errors!.join("; ")}</div>
               ))}
             </div>
           )}

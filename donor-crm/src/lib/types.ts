@@ -116,6 +116,9 @@ export type EmailLog = {
   last_opened_at: string | null;
   open_count: number;
   unsubscribed_at: string | null;
+  also_to?: string[] | null; // more To recipients on the donor's email
+  cc?: string[] | null;
+  bcc?: string[] | null; // sent separate copies
   sent_by_name: string | null;
   status: "sent" | "failed";
   error: string | null;

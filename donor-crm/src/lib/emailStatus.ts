@@ -24,5 +24,17 @@ export function deliveryOf(m: Pick<EmailLog, "status" | "delivery_status" | "pro
   return { label: "Sent, awaiting report", kind: "sent", detail: null };
 }
 
-export const isTracked = (m: Pick<EmailLog, "provider_id">) => !!m.provider_id;
+// opens aren't tracked when other people were on the donor's email (To or Cc)
+export const isTracked = (m: Pick<EmailLog, "provider_id" | "also_to" | "cc">) =>
+  !!m.provider_id && !(m.also_to?.length || m.cc?.length);
+
+/** "Also to a@b · Cc c@d · Bcc e@f", or "" when nobody was copied. */
+export const copiedLine = (m: Pick<EmailLog, "also_to" | "cc" | "bcc">) =>
+  [
+    m.also_to?.length ? `Also to ${m.also_to.join(", ")}` : "",
+    m.cc?.length ? `Cc ${m.cc.join(", ")}` : "",
+    m.bcc?.length ? `Bcc ${m.bcc.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 export const notDelivered = (m: Parameters<typeof deliveryOf>[0]) => deliveryOf(m).kind === "bad";

@@ -1,6 +1,12 @@
 // Sends donor emails through SMTP2GO and logs every message on the donor's
 // record. Runs on Supabase's servers so the email API key is never exposed
 // to the browser. Only signed-in, activated DHA staff can call it.
+//
+// Staff can copy other people on a send: "also to" and Cc addresses go on the
+// donor's email itself (the donor sees them), and each Bcc address gets its own
+// separate copy (the donor doesn't). Emails with extra visible recipients leave
+// out the open-tracking picture and the email program's one-click unsubscribe
+// button, so a copied person's opens or unsubscribe can't be taken for the donor's.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildEmailHtml, cleanHtml, fillMerge, hasContent, htmlToText, textToHtml } from "../_shared/email-html.ts";
@@ -19,7 +25,20 @@ type Body = {
   template_name?: string | null;
   batch_id?: string | null; // one id for every donor in the same mailing
   test_to?: string | null; // send one preview to this address instead of donors
+  also_to?: string[] | null; // more recipients on each donor's email
+  cc?: string[] | null;
+  bcc?: string[] | null; // each gets a separate copy of every email
 };
+
+const EMAIL = /^[^\s@<>(),;:"\[\]]+@[^\s@<>(),;:"\[\]]+\.[^\s@<>(),;:"\[\]]{2,}$/;
+const MAX_EXTRA = 10;
+
+/** Cleans a list of addresses; returns the first bad one as an error. */
+function addressList(v: unknown): { list: string[]; bad?: string } {
+  const raw = (Array.isArray(v) ? v : []).map((x) => String(x ?? "").trim().toLowerCase()).filter(Boolean);
+  const bad = raw.find((a) => !EMAIL.test(a));
+  return { list: Array.from(new Set(raw)), bad };
+}
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -56,6 +75,18 @@ Deno.serve(async (req) => {
   const ids = Array.isArray(payload.contact_ids) ? payload.contact_ids.slice(0, 500) : [];
   if (!ids.length) return json({ error: "Pick at least one donor." }, 400);
 
+  const alsoToIn = addressList(payload.also_to);
+  const ccIn = addressList(payload.cc);
+  const bccIn = addressList(payload.bcc);
+  const badAddress = alsoToIn.bad ?? ccIn.bad ?? bccIn.bad;
+  if (badAddress) return json({ error: `"${badAddress}" isn't a complete email address.` }, 400);
+  // each address once, in the most visible place it was given
+  const alsoToAll = alsoToIn.list;
+  const ccAll = ccIn.list.filter((a) => !alsoToAll.includes(a));
+  const bccAll = bccIn.list.filter((a) => !alsoToAll.includes(a) && !ccAll.includes(a));
+  if (alsoToAll.length + ccAll.length + bccAll.length > MAX_EXTRA)
+    return json({ error: `Copy at most ${MAX_EXTRA} extra people on one send.` }, 400);
+
   const { data: apiKey } = await admin.rpc("get_secret", { secret_name: "smtp2go_api_key" });
   if (!apiKey) return json({ error: "The email service key has not been set up yet." }, 500);
   const { data: settings } = await admin.from("settings").select("*").eq("id", 1).single();
@@ -71,7 +102,14 @@ Deno.serve(async (req) => {
   const { data: contacts, error } = await admin.from("contact_summary").select("*").in("id", ids);
   if (error) return json({ error: error.message }, 500);
 
-  const results: { contact_id: string; name: string; email: string | null; status: string; error?: string }[] = [];
+  const results: {
+    contact_id: string;
+    name: string;
+    email: string | null;
+    status: string;
+    error?: string;
+    copy_errors?: string[];
+  }[] = [];
   const isTest = !!payload.test_to;
   const targets = isTest ? (contacts || []).slice(0, 1) : contacts || [];
 
@@ -88,6 +126,12 @@ Deno.serve(async (req) => {
       });
       continue;
     }
+    // tests go only to the person testing; a donor isn't copied on their own email
+    const own = (c.email || "").trim().toLowerCase();
+    const alsoTo = isTest ? [] : alsoToAll.filter((a) => a !== own);
+    const cc = isTest ? [] : ccAll.filter((a) => a !== own);
+    const bcc = isTest ? [] : bccAll.filter((a) => a !== own);
+    const shared = alsoTo.length + cc.length > 0;
     const subj = (isTest ? "[TEST] " : "") + fillMerge(subject, c);
     const content = fillMerge(bodyHtml, c, true);
     const text = htmlToText(content);
@@ -95,9 +139,10 @@ Deno.serve(async (req) => {
     const logId = crypto.randomUUID();
     const unsubscribeUrl = site ? `${site}/unsubscribe?id=${isTest ? "test" : logId}` : "";
     const oneClickUrl = `${fnBase}?a=unsub&id=${logId}`;
+    const replyHeader = replyTo ? [{ header: "Reply-To", value: replyTo }] : [];
     const headers = [
-      ...(replyTo ? [{ header: "Reply-To", value: replyTo }] : []),
-      ...(isTest
+      ...replyHeader,
+      ...(isTest || shared
         ? []
         : [
             { header: "List-Unsubscribe", value: `<${oneClickUrl}>` },
@@ -115,14 +160,15 @@ Deno.serve(async (req) => {
         body: JSON.stringify({
           api_key: apiKey,
           sender: `${senderName} <${senderEmail}>`,
-          to: [isTest ? to : `${name} <${to}>`],
+          to: [isTest ? to : `${name} <${to}>`, ...alsoTo],
+          ...(cc.length ? { cc } : {}),
           subject: subj,
           text_body: [text, [footer, unsubscribeUrl ? `Unsubscribe: ${unsubscribeUrl}` : ""].filter(Boolean).join("\n")]
             .filter(Boolean)
             .join("\n\n--\n"),
           html_body: buildEmailHtml(content, footer, {
             unsubscribeUrl,
-            openPixelUrl: isTest ? undefined : `${fnBase}?a=open&id=${logId}`,
+            openPixelUrl: isTest || shared ? undefined : `${fnBase}?a=open&id=${logId}`,
           }),
           custom_headers: headers,
         }),
@@ -142,8 +188,37 @@ Deno.serve(async (req) => {
       errMsg = String(e);
     }
 
+    // Bcc: a separate copy for each address, once the donor's email has gone
+    const copyErrors: string[] = [];
+    if (status === "sent") {
+      const copyUnsub = site ? `${site}/unsubscribe?id=copy` : "";
+      for (const b of bcc) {
+        try {
+          const res = await fetch("https://api.smtp2go.com/v3/email/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Smtp2go-Api-Key": apiKey },
+            body: JSON.stringify({
+              api_key: apiKey,
+              sender: `${senderName} <${senderEmail}>`,
+              to: [b],
+              subject: subj,
+              text_body: [text, [footer, copyUnsub ? `Unsubscribe: ${copyUnsub}` : ""].filter(Boolean).join("\n")]
+                .filter(Boolean)
+                .join("\n\n--\n"),
+              html_body: buildEmailHtml(content, footer, { unsubscribeUrl: copyUnsub }),
+              custom_headers: replyHeader,
+            }),
+          });
+          const out = await res.json().catch(() => ({}));
+          if (!res.ok || !out?.data?.succeeded) copyErrors.push(`Bcc copy to ${b} didn't send`);
+        } catch {
+          copyErrors.push(`Bcc copy to ${b} didn't send`);
+        }
+      }
+    }
+
     if (!isTest) {
-      await admin.from("email_log").insert({
+      const row = {
         id: logId,
         batch_id: batchId,
         provider_id: providerId,
@@ -158,9 +233,17 @@ Deno.serve(async (req) => {
         sent_by_name: profile.full_name,
         status,
         error: errMsg || null,
-      });
+      };
+      const copies = {
+        ...(alsoTo.length ? { also_to: alsoTo } : {}),
+        ...(cc.length ? { cc } : {}),
+        ...(bcc.length ? { bcc } : {}),
+      };
+      const { error: logError } = await admin.from("email_log").insert({ ...row, ...copies });
+      // before the database has the copy columns, still keep the email on the donor's history
+      if (logError && Object.keys(copies).length) await admin.from("email_log").insert(row);
     }
-    results.push({ contact_id: c.id, name, email: to, status, error: errMsg });
+    results.push({ contact_id: c.id, name, email: to, status, error: errMsg, ...(copyErrors.length ? { copy_errors: copyErrors } : {}) });
   }
 
   return json({

@@ -29,6 +29,11 @@ its own sign-ins, and its own database.
   - Pick donors, choose a template, and press Send. Each donor gets a personal
     copy with their name, last gift amount, event, and lifetime total filled in.
   - **Send a test to me** shows exactly what donors will receive.
+  - **Copy someone (To, Cc or Bcc):** add more people to each email, here and
+    on the In-Kind tab. "Also to" and Cc addresses appear on the donor's email;
+    each Bcc address gets its own separate copy the donor doesn't see. The
+    donor's history shows who was copied. A copied person's bounce, spam report
+    or unsubscribe never changes the donor's record.
   - Three starter templates are included: a thank-you, a Giving Day renewal
     request, and a year-end thank-you. You can edit them or save new ones.
 - **Dashboard.** Shows:
@@ -213,10 +218,12 @@ uploading a spreadsheet.
 1. In a new Supabase project, run `donor-crm/supabase/setup.sql`, then
    `donor-crm/supabase/finish-setup.sql`, then
    `donor-crm/supabase/add-thankyous-optouts-inkind.sql`, then
-   `donor-crm/supabase/add-auction-packages.sql` in the SQL Editor.
-2. Open **Edge Functions → Deploy a new function → Via Editor**. Name it
-   `send-email`, paste the contents of
-   `donor-crm/supabase/functions/send-email/index.ts`, and click **Deploy**.
+   `donor-crm/supabase/add-auction-packages.sql`, then
+   `donor-crm/supabase/add-email-copies.sql` in the SQL Editor.
+2. Deploy the two functions in `donor-crm/supabase/functions` with the
+   Supabase CLI (`supabase functions deploy send-email` and
+   `supabase functions deploy email-events --no-verify-jwt`). Both use the
+   shared file in `functions/_shared`.
 3. In the SQL Editor, store the SMTP2GO API key (SMTP2GO → **Sending → API
    Keys**):
 
@@ -244,3 +251,8 @@ uploading a spreadsheet.
   donated items to the package they sold in, and adds the two-report OneCause
   import. It is safe to run more than once. Run it after
   `add-thankyous-optouts-inkind.sql`.
+- **Copying people on emails (November 2026):**
+  `donor-crm/supabase/add-email-copies.sql` adds the columns that record who
+  was copied (also to, Cc, Bcc) on each sent email. It is safe to run more
+  than once. The `send-email` and `email-events` functions were updated at the
+  same time.

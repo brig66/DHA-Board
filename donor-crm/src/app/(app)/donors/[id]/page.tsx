@@ -8,7 +8,7 @@ import { setEmailRecipients } from "@/lib/data";
 import { cityLine, fullName, hoursText, money, shortDate } from "@/lib/format";
 import ContactForm, { type ContactDraft } from "@/components/ContactForm";
 import EmailPreview from "@/components/EmailPreview";
-import { deliveryOf, isTracked } from "@/lib/emailStatus";
+import { copiedLine, deliveryOf, isTracked } from "@/lib/emailStatus";
 import { buildEmailHtml } from "../../../../../supabase/functions/_shared/email-html";
 import { thankStatus, thankYouEmailsByContact, todayLocal } from "@/lib/thanks";
 import PreferencesCard from "@/components/PreferencesCard";
@@ -743,6 +743,7 @@ export default function DonorPage() {
                     <tr>
                       <td colSpan={5} className="whitespace-pre-wrap bg-[#faf8f3] text-sm">
                         To: {m.to_email}
+                        {copiedLine(m) && <>{"\n"}{copiedLine(m)}</>}
                         {m.body_html ? (
                           <EmailPreview className="mt-2 block w-full max-w-[640px] rounded border-0" html={buildEmailHtml(m.body_html, "")} />
                         ) : (

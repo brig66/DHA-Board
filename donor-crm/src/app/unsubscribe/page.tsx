@@ -24,12 +24,13 @@ export default function UnsubscribePage() {
 
 function Unsubscribe() {
   const id = useSearchParams().get("id") ?? "";
-  const [state, setState] = useState<"loading" | "ask" | "working" | "done" | "already" | "test" | "error">("loading");
+  const [state, setState] = useState<"loading" | "ask" | "working" | "done" | "already" | "test" | "copy" | "error">("loading");
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (id === "test") return setState("test");
+    if (id === "copy") return setState("copy");
     fetch(`${ENDPOINT}?a=info&id=${encodeURIComponent(id)}`, { headers })
       .then((r) => r.json())
       .then((r) => {
@@ -64,6 +65,16 @@ function Unsubscribe() {
         <>
           <h1 className={title}>This was a test email</h1>
           <p className="muted mt-2 text-sm">Unsubscribe links work in the emails donors receive. Nothing was changed.</p>
+        </>
+      );
+    case "copy":
+      return (
+        <>
+          <h1 className={title}>This was a copy of a donor email</h1>
+          <p className="muted mt-2 text-sm">
+            You received a blind copy (Bcc) of an email sent to a donor. Nothing was changed, and you won&rsquo;t get more emails
+            unless Dental Health Arlington copies you again.
+          </p>
         </>
       );
     case "ask":
