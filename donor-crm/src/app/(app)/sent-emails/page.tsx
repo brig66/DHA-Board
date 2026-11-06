@@ -5,7 +5,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { fetchAll } from "@/lib/data";
 import { downloadCsv, shortDate } from "@/lib/format";
-import { deliveryOf, isTracked } from "@/lib/emailStatus";
+import { copiedLine, deliveryOf, isTracked } from "@/lib/emailStatus";
 import EmailPreview from "@/components/EmailPreview";
 import { buildEmailHtml } from "../../../../supabase/functions/_shared/email-html";
 import type { EmailLog } from "@/lib/types";
@@ -136,7 +136,7 @@ export default function SentEmailsPage() {
       if (show === "unopened" && (m.first_opened_at || !isTracked(m) || d.kind === "bad")) return false;
       if (show === "unsub" && !(m.unsubscribed_at || donorOf(m)?.unsubscribed_at)) return false;
       if (term) {
-        const hay = [name(donorOf(m)), m.to_email, m.subject, m.sent_by_name].join(" ").toLowerCase();
+        const hay = [name(donorOf(m)), m.to_email, copiedLine(m), m.subject, m.sent_by_name].join(" ").toLowerCase();
         if (!hay.includes(term)) return false;
       }
       return true;
@@ -173,13 +173,16 @@ export default function SentEmailsPage() {
   function exportRows() {
     downloadCsv(
       `DHA sent emails ${new Date().toISOString().slice(0, 10)}.csv`,
-      ["Sent", "Donor", "Email address", "Subject", "Sent by", "Delivery", "Delivery detail", "First opened", "Times opened", "Unsubscribed"],
+      ["Sent", "Donor", "Email address", "Also to", "Cc", "Bcc", "Subject", "Sent by", "Delivery", "Delivery detail", "First opened", "Times opened", "Unsubscribed"],
       filtered.map((m) => {
         const d = deliveryOf(m);
         return [
           dateTime(m.sent_at),
           name(donorOf(m)),
           m.to_email,
+          (m.also_to ?? []).join(", "),
+          (m.cc ?? []).join(", "),
+          (m.bcc ?? []).join(", "),
           m.subject,
           m.sent_by_name,
           d.label,
@@ -410,6 +413,7 @@ export default function SentEmailsPage() {
                           <span className="muted">{name(donor)}</span>
                         )}
                         <div className="muted text-xs">{m.to_email}</div>
+                        {copiedLine(m) && <div className="muted text-xs">{copiedLine(m)}</div>}
                         {unsub && (
                           <span className="pill pill-warn mt-1">
                             Unsubscribed {shortDate(m.unsubscribed_at ?? donor?.unsubscribed_at)}
