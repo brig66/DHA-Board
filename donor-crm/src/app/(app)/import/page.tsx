@@ -59,25 +59,61 @@ const KINDS: { kind: Kind; title: string; text: string }[] = [
   { kind: "auction", title: "Auction or in-kind items", text: "OneCause’s Auction Proceeds and Items reports (both at once), or any list of donated items" },
 ];
 
-async function readFile(file: File): Promise<Record<string, unknown>[]> {
+/**
+ * Where the column headings are. Usually the first row, but some exports (SignUpGenius,
+ * for one) put a title line such as "SignUpGenius (1)" above them. The headings are the
+ * first row that fills at least half as many cells as the fullest row near the top.
+ */
+function headerRowIndex(rows: unknown[][]): number {
+  const filled = rows.slice(0, 20).map((r) => r.filter((v) => String(v ?? "").trim() !== "").length);
+  const most = Math.max(0, ...filled);
+  if (most <= 1) return 0;
+  const need = Math.max(2, Math.ceil(most / 2));
+  const i = filled.findIndex((n) => n >= need);
+  return i < 0 ? 0 : i;
+}
+
+/** Rows as objects keyed by heading; repeated headings become "Email_1", "Email_2" (as the CSV reader does). */
+function rowsUnder(header: unknown[], body: unknown[][]): Record<string, unknown>[] {
+  const used = new Map<string, number>();
+  const names = header.map((h) => {
+    const base = String(h ?? "").trim();
+    const n = used.get(base) ?? 0;
+    used.set(base, n + 1);
+    return n ? `${base}_${n}` : base;
+  });
+  return body.map((r) => Object.fromEntries(names.map((n, i) => [n, r[i] ?? ""])));
+}
+
+/**
+ * The file's rows under its headings. `titleRows` counts any title lines above the headings,
+ * so "row 12 was left out" messages can still point at the right row of the spreadsheet.
+ */
+async function readFile(file: File): Promise<{ raw: Record<string, unknown>[]; titleRows: number }> {
   if (/\.xlsx$/i.test(file.name)) {
     const { default: readXlsxFile } = await import("read-excel-file");
     const rows = await readXlsxFile(file);
-    const [header, ...body] = rows;
-    const names = (header ?? []).map((h) => String(h ?? "").trim());
-    return body.map((r) => Object.fromEntries(names.map((n, i) => [n, r[i]])));
+    const at = headerRowIndex(rows);
+    const header = rows[at] ?? [];
+    const names = header.map((h) => String(h ?? "").trim());
+    return { raw: rows.slice(at + 1).map((r) => Object.fromEntries(names.map((n, i) => [n, r[i]]))), titleRows: at };
   }
   if (/\.xls$/i.test(file.name)) {
     throw new Error("Older .xls files can't be read. In Excel, choose File → Save As → Excel Workbook (.xlsx) or CSV, then upload that.");
   }
   const text = await file.text();
-  const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
-  return parsed.data;
+  // blank lines are kept while looking for the headings, so the count of title lines is exact
+  const grid = Papa.parse<string[]>(text).data;
+  const at = headerRowIndex(grid);
+  // the usual case: headings on the first row, read exactly as before
+  if (at === 0) return { raw: Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true }).data, titleRows: 0 };
+  const blankLine = (r: string[]) => r.length === 1 && r[0] === "";
+  return { raw: rowsUnder(grid[at], grid.slice(at + 1).filter((r) => !blankLine(r))), titleRows: at };
 }
 
 export default function ImportPage() {
   const [kind, setKind] = useState<Kind>("gifts");
-  const [columnFile, setColumnFile] = useState<{ name: string; raw: RawRow[]; key: number } | null>(null);
+  const [columnFile, setColumnFile] = useState<{ name: string; raw: RawRow[]; titleRows: number; key: number } | null>(null);
   type OcFile = { name: string; raw: RawRow[] };
   const [oneCause, setOneCause] = useState<{ proceeds: OcFile | null; items: OcFile | null; key: number } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
@@ -117,7 +153,7 @@ export default function ImportPage() {
     if (!chosen.length) return;
     if (as === "auction") {
       try {
-        const sheets = await Promise.all(chosen.map(async (f) => ({ name: f.name, raw: await readFile(f) })));
+        const sheets = await Promise.all(chosen.map(async (f) => ({ name: f.name, ...(await readFile(f)) })));
         const kinds = sheets.map((x) => detectOneCause(x.raw));
         if (kinds.includes("bids"))
           return setError(
@@ -137,7 +173,7 @@ export default function ImportPage() {
         if (sheets.length > 1) return setError("For this kind of import, please upload one file at a time.");
         if (!sheets[0].raw.length) return setError(`"${sheets[0].name}" has no rows under its headings.`);
         await loadEvents();
-        setColumnFile({ name: sheets[0].name, raw: sheets[0].raw, key: Date.now() });
+        setColumnFile({ name: sheets[0].name, raw: sheets[0].raw, titleRows: sheets[0].titleRows, key: Date.now() });
       } catch (e) {
         setError((e as Error).message);
       }
@@ -149,9 +185,9 @@ export default function ImportPage() {
         return;
       }
       try {
-        const raw = await readFile(chosen[0]);
+        const { raw, titleRows } = await readFile(chosen[0]);
         if (!raw.length) return setError(`"${chosen[0].name}" has no rows under its headings.`);
-        setColumnFile({ name: chosen[0].name, raw, key: Date.now() });
+        setColumnFile({ name: chosen[0].name, raw, titleRows, key: Date.now() });
       } catch (e) {
         setError((e as Error).message);
       }
@@ -160,7 +196,8 @@ export default function ImportPage() {
     setLabel(chosen.length === 1 ? chosen[0].name.replace(/\.[^.]+$/, "") : "Spreadsheet import");
     const combined: MapResult = { rows: [], skipped: [], recognized: [] };
     try {
-      const sheets = await Promise.all(chosen.map(async (f) => ({ f, raw: await readFile(f) })));
+      const sheets = await Promise.all(chosen.map(async (f) => ({ f, ...(await readFile(f)) })));
+      const shift = (skipped: { line: number; reason: string }[], by: number) => skipped.map((s) => ({ ...s, line: s.line + by }));
       const lists = sheets.filter((x) => looksLikeAttendeeList(x.raw));
       if (lists.length && lists.length < sheets.length) {
         setError("Some of these files are attendee lists (no gift amounts) and some are gift files. Please upload them separately.");
@@ -168,15 +205,15 @@ export default function ImportPage() {
       }
       if (lists.length) {
         setAttendeeFiles(
-          lists.map(({ f, raw }) => {
+          lists.map(({ f, raw, titleRows }) => {
             const res = mapAttendees(raw);
-            return { fileName: f.name, rows: res.rows, skipped: res.skipped, event: guessEvent(f.name) };
+            return { fileName: f.name, rows: res.rows, skipped: shift(res.skipped, titleRows), event: guessEvent(f.name) };
           })
         );
         await loadEvents();
         return;
       }
-      for (const { f, raw } of sheets) {
+      for (const { f, raw, titleRows } of sheets) {
         const result = mapRows(raw);
         if (!result.recognized.includes("amount") || !result.recognized.includes("gift_date")) {
           setError(
@@ -185,7 +222,7 @@ export default function ImportPage() {
         }
         combined.rows.push(...result.rows);
         combined.skipped.push(
-          ...result.skipped.map((s) => ({ ...s, reason: chosen.length > 1 ? `${s.reason}, ${f.name}` : s.reason }))
+          ...shift(result.skipped, titleRows).map((s) => ({ ...s, reason: chosen.length > 1 ? `${s.reason}, ${f.name}` : s.reason }))
         );
         combined.recognized = Array.from(new Set([...combined.recognized, ...result.recognized]));
       }
@@ -369,6 +406,7 @@ export default function ImportPage() {
           raw={columnFile.raw}
           initialEvent={guessEvent(columnFile.name)}
           knownEvents={knownEvents}
+          titleRows={columnFile.titleRows}
         />
       )}
 

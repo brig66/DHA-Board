@@ -57,12 +57,15 @@ export default function ColumnImport({
   raw,
   initialEvent,
   knownEvents,
+  titleRows = 0,
 }: {
   kind: ImportKind;
   fileName: string;
   raw: RawRow[];
   initialEvent: string;
   knownEvents: string[];
+  /** title lines above the headings, so row numbers match the spreadsheet */
+  titleRows?: number;
 }) {
   const headers = useMemo(() => headersOf(raw), [raw]);
   const [map, setMap] = useState<ColumnMap>(() => guessColumns(kind, headers));
@@ -234,7 +237,7 @@ export default function ColumnImport({
           {built.skipped.length > 0 && (
             <span className="text-[#b8862e]">
               {" "}{built.skipped.length} row{built.skipped.length === 1 ? "" : "s"} left out:{" "}
-              {built.skipped.slice(0, 6).map((s) => `row ${s.line} (${s.reason.toLowerCase()})`).join(", ")}
+              {built.skipped.slice(0, 6).map((s) => `row ${s.line + titleRows} (${s.reason.toLowerCase()})`).join(", ")}
               {built.skipped.length > 6 && "…"}
             </span>
           )}
