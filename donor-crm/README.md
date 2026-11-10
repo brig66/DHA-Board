@@ -54,7 +54,7 @@ its own sign-ins, and its own database.
     donation website's export, any gift spreadsheet, or an attendee list.
     Several files can be uploaded at once.
   - **Volunteers and hours:** a volunteer list, with or without dates and
-    hours worked.
+    hours worked. SignUpGenius exports can be uploaded as they are.
   - **People list:** board members, contact updates, and people who asked not
     to be emailed, called, or mailed.
   - **Auction or in-kind items:** OneCause's **Auction Proceeds** and
@@ -70,6 +70,9 @@ its own sign-ins, and its own database.
     matched to each field, and staff can change any match before importing.
   - Uploading the same file twice is harmless: gifts and hours already in the
     CRM are skipped, and auction items are updated rather than added again.
+  - A title line above the column headings (SignUpGenius adds one, for
+    example) is skipped automatically, and "row left out" notes still give
+    the spreadsheet's own row numbers.
   - A blank template for each kind is on the Import page.
 - **In-Kind tab.** Every donated item or service: who gave it, its market
   value, what it sold for, and who bought it. Each item appears on its donor's
