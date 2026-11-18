@@ -29,6 +29,7 @@ export default function TopNav({
     { href: "/donors", label: "Donors" },
     { href: "/board", label: "Board" },
     { href: "/in-kind", label: "In-Kind" },
+    { href: "/smiles", label: "SMILES" },
     { href: "/email", label: "Email" },
     { href: "/sent-emails", label: "Sent Emails" },
     { href: "/unsubscribed", label: "Unsubscribed", badge: unsubscribedToReview },

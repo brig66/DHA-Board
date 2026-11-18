@@ -50,7 +50,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <>
       <TopNav profile={profile} openDuplicates={openDuplicates ?? 0} unsubscribedToReview={unsubscribedToReview ?? 0} />
-      <div className="mx-auto max-w-7xl px-4 py-8">{children}</div>
+      <div className="mx-auto w-full max-w-7xl px-4 py-8">{children}</div>
     </>
   );
 }
