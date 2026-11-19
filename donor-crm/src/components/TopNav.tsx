@@ -61,10 +61,12 @@ export default function TopNav({
           </nav>
         </div>
         <div className="flex items-center gap-3">
-          <span className="hidden text-sm text-[#5c584d] sm:inline">
-            {profile.full_name} &middot; {profile.role === "admin" ? "Admin" : "Staff"}
-          </span>
-          <button onClick={signOut} className="btn btn-secondary btn-sm">
+          {/* who's signed in shows when pointing at Sign out, so the menu fits on one line on a laptop */}
+          <button
+            onClick={signOut}
+            className="btn btn-secondary btn-sm"
+            title={`Signed in as ${profile.full_name} (${profile.role === "admin" ? "Admin" : "Staff"})`}
+          >
             Sign out
           </button>
         </div>
