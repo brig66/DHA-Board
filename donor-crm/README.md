@@ -97,6 +97,15 @@ its own sign-ins, and its own database.
     deductible.
   - **Download letters to print** makes the same PDFs for donors without an
     email address.
+- **SMILES tab.** Totals for SMILES, DHA's school program (free screenings,
+  fluoride and sealants for 2nd–4th graders): permission forms returned,
+  children screened and sealed, school visits, and volunteer hours, by month
+  and by school, for any school year. The numbers are read live from the DHA
+  website each time the tab opens. Children's records never leave the
+  website: the CRM gets totals only and saves nothing. To protect privacy, the
+  website hides any school count from 1 to 4, shown as "1–4". Importing
+  permission forms and correcting a child's record happen on the website;
+  the tab has buttons that open those pages.
 - **Do not email, call, or mail.** Three separate boxes on each person's
   record. Ticking one asks how they asked (phone, in person, mail, and so on)
   and keeps a dated history. Anyone who clicks **Unsubscribe** in an email is
@@ -170,6 +179,10 @@ Email sending**.
    (This key is designed to be public. On its own it can't read any donor
    information; only activated staff who sign in can.)
 
+   For the SMILES tab, also add `SMILES_API_KEY` (see "Connecting the SMILES
+   tab" below). It's a secret: never give it a name starting with
+   `NEXT_PUBLIC_`.
+
 4. Click **Deploy**. Vercel gives you the web address for the CRM.
 5. Back in Supabase (DHA-CRM project), go to **Authentication → URL
    Configuration** and set **Site URL** to that web address, so sign-up
@@ -183,6 +196,21 @@ Email sending**.
    click **Pending** next to their name to activate them.
 3. Open **Email**, choose the "Thank you for your gift" template, add yourself
    or one donor, and click **Send a test to me** to confirm emails arrive.
+
+### Connecting the SMILES tab (once the SMILES Data plugin is on the website)
+
+1. Sign in to the DHA website's WordPress, go to **Tools → SMILES Settings**
+   and click **Create key**. The key is shown only once: copy it.
+2. In Vercel, open the `donor-crm` project → **Settings → Environment
+   Variables**. Add `SMILES_API_KEY` with the key as its value, for
+   Production. Click **Save**.
+3. Open **Deployments**, click **⋯** next to the top one and choose
+   **Redeploy**. When it finishes, open the SMILES tab.
+
+`SMILES_API_URL` is optional and only needed if the feed ever moves; it
+defaults to `https://dentalhealtharlington.org/wp-json/smiles/v1/summary`.
+Until the plugin is installed and the key is added, the SMILES tab shows
+"Couldn't load SMILES totals from the website" with the reason.
 
 ## Day to day
 
@@ -206,6 +234,9 @@ Email sending**.
   buyer receipts**.
 - **One-off gifts by check or cash:** open the donor (or click **+ Add
   donor**), then click **+ Record a gift**.
+- **SMILES numbers for a report:** open **SMILES** and pick the school year.
+  To import permission forms, click **Import permission forms**; it opens the
+  website, where you sign in to WordPress.
 - **Volunteer time:** open the volunteer (or click **+ Add volunteer**), then
   click **+ Log volunteer time**. For a grant report, set **Show** to
   **Volunteers** on the Donors page and click **Download shown volunteers'
