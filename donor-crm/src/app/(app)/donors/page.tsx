@@ -6,9 +6,29 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { fetchAll, fetchAllContacts, setEmailRecipients } from "@/lib/data";
 import { cityLine, downloadCsv, fullName, hoursText, money, shortDate } from "@/lib/format";
-import type { ContactSummary, VolunteerHours } from "@/lib/types";
+import type { ContactSummary, Donation, VolunteerHours } from "@/lib/types";
 
 type SortKey = "name" | "email" | "address" | "phone" | "total" | "last_gift";
+
+type Gift = Pick<Donation, "contact_id" | "gift_date" | "gift_time" | "amount" | "event_name">;
+/** One person's giving in the year picked under "Gave in year". */
+type YearGiving = {
+  total: number;
+  count: number;
+  last_date: string;
+  last_time: string | null;
+  last_amount: number;
+  last_event: string | null;
+};
+
+/** True when gift a counts as later than gift b (latest date, then latest time; a gift with a time beats one without). */
+function later(a: { date: string; time: string | null }, b: { date: string; time: string | null }) {
+  if (a.date !== b.date) return a.date > b.date;
+  if (a.time === b.time) return false;
+  if (b.time === null) return true;
+  if (a.time === null) return false;
+  return a.time > b.time;
+}
 
 export default function DonorsPage() {
   return (
@@ -22,6 +42,7 @@ function DonorList() {
   const router = useRouter();
   const params = useSearchParams();
   const [contacts, setContacts] = useState<ContactSummary[]>([]);
+  const [gifts, setGifts] = useState<Gift[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,11 +59,50 @@ function DonorList() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    fetchAllContacts(createClient())
-      .then(setContacts)
+    const supabase = createClient();
+    Promise.all([
+      fetchAllContacts(supabase),
+      // every gift's date and amount, so a year's giving can be added up per person
+      fetchAll<Gift>(supabase, "donations", "id, contact_id, gift_date, gift_time, amount, event_name", "id"),
+    ])
+      .then(([people, allGifts]) => {
+        setContacts(people);
+        setGifts(allGifts);
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  // With a year picked, Total given and Last gift cover that year only.
+  const yearGiving = useMemo(() => {
+    if (!year) return null;
+    const byPerson = new Map<string, YearGiving>();
+    for (const g of gifts) {
+      if (!g.contact_id || !String(g.gift_date).startsWith(`${year}-`)) continue;
+      const amount = Number(g.amount) || 0;
+      const y = byPerson.get(g.contact_id);
+      if (!y) {
+        byPerson.set(g.contact_id, {
+          total: amount,
+          count: 1,
+          last_date: g.gift_date,
+          last_time: g.gift_time,
+          last_amount: amount,
+          last_event: g.event_name,
+        });
+        continue;
+      }
+      y.total += amount;
+      y.count += 1;
+      if (later({ date: g.gift_date, time: g.gift_time }, { date: y.last_date, time: y.last_time })) {
+        y.last_date = g.gift_date;
+        y.last_time = g.gift_time;
+        y.last_amount = amount;
+        y.last_event = g.event_name;
+      }
+    }
+    return byPerson;
+  }, [year, gifts]);
 
   const eventOptions = useMemo(
     () =>
@@ -110,9 +170,9 @@ function DonorList() {
         case "phone":
           return (c.phone ?? "~").replace(/\D/g, "") || "~";
         case "total":
-          return Number(c.total_given);
+          return yearGiving ? yearGiving.get(c.id)?.total ?? 0 : Number(c.total_given);
         case "last_gift":
-          return c.last_gift_date ?? "";
+          return yearGiving ? yearGiving.get(c.id)?.last_date ?? "" : c.last_gift_date ?? "";
       }
     };
     rows.sort((a, b) => {
@@ -122,7 +182,9 @@ function DonorList() {
       return asc ? cmp : -cmp;
     });
     return rows;
-  }, [contacts, search, event, year, notSince, emailOnly, kind, sort, asc]);
+  }, [contacts, search, event, year, notSince, emailOnly, kind, sort, asc, yearGiving]);
+
+  const yearTotal = yearGiving ? shown.reduce((sum, c) => sum + (yearGiving.get(c.id)?.total ?? 0), 0) : 0;
 
   function toggleSort(k: SortKey) {
     if (sort === k) setAsc(!asc);
@@ -154,17 +216,23 @@ function DonorList() {
 
   function exportShown() {
     const rows = selected.size ? shown.filter((c) => selected.has(c.id)) : shown;
+    const yearCols = yearGiving ? [`Given in ${year}`, `Gifts in ${year}`, `Last Gift in ${year}`, `Last Gift Amount in ${year}`] : [];
+    const yearVals = (c: ContactSummary) => {
+      if (!yearGiving) return [];
+      const y = yearGiving.get(c.id);
+      return y ? [y.total.toFixed(2), y.count, y.last_date, y.last_amount.toFixed(2)] : ["0.00", 0, "", ""];
+    };
     downloadCsv(
-      `DHA donors ${new Date().toISOString().slice(0, 10)}.csv`,
+      `DHA donors ${year ? `gave in ${year} ` : ""}${new Date().toISOString().slice(0, 10)}.csv`,
       [
         "First Name", "Last Name", "Organization", "Email", "Other Emails", "Phone", "Other Phones", "Address", "City",
-        "State", "Zip", "Total Given", "Number of Gifts", "First Gift", "Last Gift", "Last Gift Amount",
+        "State", "Zip", ...yearCols, "Total Given", "Number of Gifts", "First Gift", "Last Gift", "Last Gift Amount",
         "Last Gift Event", "All Events", "Years Given", "Events Attended", "Volunteer", "Volunteer Hours",
         "Last Volunteered", "Do Not Email", "Do Not Call", "Do Not Mail", "Notes",
       ],
       rows.map((c) => [
         c.first_name, c.last_name, c.organization, c.email, c.alt_emails.join("; "), c.phone, c.alt_phones.join("; "),
-        c.address, c.city, c.state, c.zip, Number(c.total_given).toFixed(2), c.gift_count, c.first_gift_date,
+        c.address, c.city, c.state, c.zip, ...yearVals(c), Number(c.total_given).toFixed(2), c.gift_count, c.first_gift_date,
         c.last_gift_date, c.last_gift_amount === null ? "" : Number(c.last_gift_amount).toFixed(2),
         c.last_gift_event, c.events, [...c.gift_years].sort().join(", "), c.events_attended,
         c.is_volunteer ? "Yes" : "",
@@ -229,6 +297,12 @@ function DonorList() {
           <p className="muted text-sm">
             {shown.length} of {contacts.length} contacts shown. Click a column heading to sort.
           </p>
+          {yearGiving && (
+            <p className="text-sm">
+              <b>{money(yearTotal)}</b> given in {year} by the {shown.length === 1 ? "person" : "people"} shown. The amounts
+              below are for {year} only; choose <b>Any year</b> for lifetime totals.
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/donors/new?volunteer=1" className="btn btn-secondary">
@@ -332,9 +406,9 @@ function DonorList() {
               <Th k="phone">Phone</Th>
               <Th k="address">Address</Th>
               <Th k="total" right>
-                Total given
+                {year ? `Given in ${year}` : "Total given"}
               </Th>
-              <Th k="last_gift">Last gift</Th>
+              <Th k="last_gift">{year ? `Last gift in ${year}` : "Last gift"}</Th>
             </tr>
           </thead>
           <tbody>
@@ -368,13 +442,35 @@ function DonorList() {
                   <div className="muted text-xs">{cityLine(c)}</div>
                 </td>
                 <td className="text-right">
-                  {money(c.total_given)}
-                  <div className="muted text-xs">
-                    {c.gift_count} gift{c.gift_count === 1 ? "" : "s"}
-                  </div>
+                  {yearGiving ? (
+                    <>
+                      {money(yearGiving.get(c.id)?.total ?? 0)}
+                      <div className="muted text-xs">
+                        {yearGiving.get(c.id)?.count ?? 0} gift{yearGiving.get(c.id)?.count === 1 ? "" : "s"} in {year}
+                      </div>
+                      <div className="muted text-xs">{money(c.total_given)} all years</div>
+                    </>
+                  ) : (
+                    <>
+                      {money(c.total_given)}
+                      <div className="muted text-xs">
+                        {c.gift_count} gift{c.gift_count === 1 ? "" : "s"}
+                      </div>
+                    </>
+                  )}
                 </td>
                 <td>
-                  {c.last_gift_date ? (
+                  {yearGiving ? (
+                    yearGiving.get(c.id) ? (
+                      <>
+                        {money(yearGiving.get(c.id)!.last_amount)} <span className="muted">on</span>{" "}
+                        {shortDate(yearGiving.get(c.id)!.last_date)}
+                        <div className="muted text-xs">{yearGiving.get(c.id)!.last_event}</div>
+                      </>
+                    ) : (
+                      <span className="muted text-xs">No gifts in {year}</span>
+                    )
+                  ) : c.last_gift_date ? (
                     <>
                       {money(c.last_gift_amount)} <span className="muted">on</span> {shortDate(c.last_gift_date)}
                       <div className="muted text-xs">{c.last_gift_event}</div>

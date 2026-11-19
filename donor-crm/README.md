@@ -24,7 +24,9 @@ its own sign-ins, and its own database.
   gift, and last gift are calculated automatically.
 - **Sorting and filtering.** Sort by name, email, address, phone, total given,
   or last gift. Filter by event, by year given, by "no gift since…", or by
-  "only donors we can email."
+  "only donors we can email." With a year picked, the Total given and Last
+  gift columns (and the Excel download) show that year's giving, with the
+  lifetime total underneath.
 - **Email from the CRM.**
   - Pick donors, choose a template, and press Send. Each donor gets a personal
     copy with their name, last gift amount, event, and lifetime total filled in.

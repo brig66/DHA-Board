@@ -2,10 +2,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ContactSummary, Donation } from "./types";
 
 /** Loads every row of a table/view, 1,000 at a time (Supabase's page size). */
-export async function fetchAll<T>(supabase: SupabaseClient, table: string, columns = "*"): Promise<T[]> {
+/** Every row of a table, 1,000 at a time. Pass orderBy (a unique column) so pages never overlap or skip rows. */
+export async function fetchAll<T>(supabase: SupabaseClient, table: string, columns = "*", orderBy?: string): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from(table).select(columns).range(from, from + 999);
+    let q = supabase.from(table).select(columns);
+    if (orderBy) q = q.order(orderBy);
+    const { data, error } = await q.range(from, from + 999);
     if (error) throw error;
     out.push(...((data ?? []) as T[]));
     if (!data || data.length < 1000) break;
