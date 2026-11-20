@@ -4,6 +4,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import SchoolYearPicker from "@/components/SchoolYearPicker";
+import SmilesDemographics from "@/components/SmilesDemographics";
 import {
   currentSchoolYear,
   getSmilesSummary,
@@ -225,11 +226,14 @@ function SmilesTotals({ data }: { data: import("@/lib/smiles").SmilesSummary }) 
         )}
       </section>
 
+      <SmilesDemographics data={data.demographics} />
+
       <section className="card p-4">
         <h2 className="font-display text-lg font-semibold">Children&rsquo;s records</h2>
         <p className="muted text-sm">
-          Importing permission forms and correcting a child&rsquo;s record happen on the DHA website. These open in a new
-          tab, where you sign in to WordPress.
+          Permission forms that parents submit on the DHA website are added here automatically. Importing older or
+          paper forms and correcting a child&rsquo;s record happen on the DHA website. These open in a new tab, where you
+          sign in to WordPress.
         </p>
         <div className="mt-3 flex flex-wrap gap-3">
           <a className="btn btn-primary" href={data.links.import} target="_blank" rel="noopener noreferrer">

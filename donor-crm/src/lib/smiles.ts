@@ -27,6 +27,18 @@ export type SmilesField = (typeof SMILES_FIELDS)[number];
 /** null = hidden for privacy (only ever in the by-school numbers) */
 export type SmilesNumbers = Record<SmilesField, number | null>;
 
+/** One category (e.g. "3rd grade") and how many forms fall in it. */
+export type SmilesDemographicRow = { label: string; returned: number; yes: number };
+export type SmilesDemographicGroup = { key: string; label: string; note: string; rows: SmilesDemographicRow[] };
+/**
+ * Demographic totals for the whole program in one school year, sent by the website's
+ * DHA SMILES Entries plugin. Totals only: never a child, never a school breakdown.
+ */
+export type SmilesDemographics = {
+  base: { returned: number; yes: number };
+  groups: SmilesDemographicGroup[];
+};
+
 export type SmilesSummary = {
   school_year: string;
   generated_at: string | null;
@@ -36,6 +48,8 @@ export type SmilesSummary = {
   by_month: (SmilesNumbers & { month: string })[];
   by_school: (SmilesNumbers & { school: string })[];
   links: { import: string; settings: string };
+  /** null when the website doesn't send demographics (DHA SMILES Entries 2.1+ not installed) */
+  demographics: SmilesDemographics | null;
 };
 
 export type SmilesResult = { ok: true; data: SmilesSummary } | { ok: false; problem: string };
@@ -91,6 +105,36 @@ function siteLink(v: unknown, feed: URL, fallbackPage: string): string {
   return `${feed.origin}/wp-admin/tools.php?page=${fallbackPage}`;
 }
 
+const count = (v: unknown): number => {
+  const n = num(v);
+  return n === null || n < 0 ? 0 : Math.round(n);
+};
+
+/** Demographic totals from the feed, or null if missing or not in the expected shape. */
+function demographics(raw: unknown): SmilesDemographics | null {
+  if (!raw || typeof raw !== "object") return null;
+  const d = raw as Record<string, unknown>;
+  const base = (d.base && typeof d.base === "object" ? d.base : null) as Record<string, unknown> | null;
+  if (!base || !Array.isArray(d.groups)) return null;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim().slice(0, 200) : "");
+  const groups: SmilesDemographicGroup[] = [];
+  for (const g of d.groups.slice(0, 20)) {
+    if (!g || typeof g !== "object") continue;
+    const gr = g as Record<string, unknown>;
+    const label = str(gr.label);
+    if (!label || !Array.isArray(gr.rows)) continue;
+    const rows = gr.rows
+      .slice(0, 50)
+      .filter((r) => r && typeof r === "object" && str((r as { label?: unknown }).label))
+      .map((r) => {
+        const rr = r as Record<string, unknown>;
+        return { label: str(rr.label), returned: count(rr.returned), yes: count(rr.yes) };
+      });
+    groups.push({ key: str(gr.key) || label, label, note: str(gr.note), rows });
+  }
+  return { base: { returned: count(base.returned), yes: count(base.yes) }, groups };
+}
+
 function tidy(raw: unknown, feed: URL): SmilesSummary | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -114,6 +158,7 @@ function tidy(raw: unknown, feed: URL): SmilesSummary | null {
       import: siteLink(links.import, feed, "smiles-import"),
       settings: siteLink(links.settings, feed, "smiles-settings"),
     },
+    demographics: demographics(r.demographics),
   };
 }
 
